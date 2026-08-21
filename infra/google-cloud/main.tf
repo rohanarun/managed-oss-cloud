@@ -72,9 +72,73 @@ resource "google_compute_instance" "managed_oss" {
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y docker.io docker-compose ca-certificates curl
+    apt-get install -y docker.io docker-compose ca-certificates curl openssl
     systemctl enable --now docker
     install -d -m 0750 /opt/managed-oss/apps /opt/managed-oss/backups /opt/managed-oss/config
+    if [ ! -f /opt/managed-oss/config/runtime.env ]; then
+      umask 077
+      POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+      cat > /opt/managed-oss/config/runtime.env <<EOF
+    POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
+    EOF
+    fi
+    cat > /opt/managed-oss/config/docker-compose.yml <<'EOF'
+    version: "3.9"
+    services:
+      database:
+        image: postgres:17-alpine
+        restart: unless-stopped
+        env_file: runtime.env
+        environment:
+          POSTGRES_DB: opendock
+          POSTGRES_USER: opendock
+          POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
+        volumes:
+          - /opt/managed-oss/apps/postgres:/var/lib/postgresql/data
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready -U opendock -d opendock"]
+          interval: 10s
+          timeout: 5s
+          retries: 10
+      control-plane:
+        image: ${var.control_plane_image}
+        restart: unless-stopped
+        depends_on:
+          database:
+            condition: service_healthy
+        env_file: runtime.env
+        environment:
+          PORT: 8787
+          DATABASE_URL: postgresql://opendock:$${POSTGRES_PASSWORD}@database:5432/opendock
+          DATABASE_SSL: "false"
+          PUBLIC_APP_URL: ${var.control_plane_domain != "" ? "https://${var.control_plane_domain}" : "http://${google_compute_address.managed_oss.address}"}
+          PUBLIC_HOST_TARGET: ${var.apps_domain}
+          PROVISIONING_MODE: dry-run
+        expose:
+          - "8787"
+      caddy:
+        image: caddy:2.10-alpine
+        restart: unless-stopped
+        ports:
+          - "80:80"
+          - "443:443"
+        volumes:
+          - /opt/managed-oss/config/Caddyfile:/etc/caddy/Caddyfile:ro
+          - /opt/managed-oss/apps/caddy-data:/data
+          - /opt/managed-oss/apps/caddy-config:/config
+    EOF
+    cat > /opt/managed-oss/config/Caddyfile <<'EOF'
+    ${var.control_plane_domain != "" ? var.control_plane_domain : ":80"} {
+      encode zstd gzip
+      reverse_proxy control-plane:8787
+    }
+    EOF
+    cd /opt/managed-oss/config
+    set -a
+    source runtime.env
+    set +a
+    docker-compose pull
+    docker-compose up -d
     touch /opt/managed-oss/.host-ready
   STARTUP
 

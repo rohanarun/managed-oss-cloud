@@ -12,3 +12,8 @@ output "monthly_cost_note" {
   description = "Pricing reminder for the operator."
   value       = "Free-tier eligibility is account and usage dependent. An in-use external IPv4 is billed separately."
 }
+
+output "dashboard_url" {
+  description = "Open the control plane after first boot and DNS setup."
+  value       = var.control_plane_domain != "" ? "https://${var.control_plane_domain}" : "http://${google_compute_address.managed_oss.address}"
+}

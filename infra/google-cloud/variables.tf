@@ -42,3 +42,21 @@ variable "disk_size_gb" {
     error_message = "The host needs at least a 10 GB boot disk."
   }
 }
+
+variable "control_plane_image" {
+  description = "Published OpenDock control-plane container image. Pin a digest for production."
+  type        = string
+  default     = "ghcr.io/rohanarun/managed-oss-cloud:latest"
+}
+
+variable "control_plane_domain" {
+  description = "Optional DNS hostname for the dashboard. Leave empty for HTTP on the static IPv4 during initial setup."
+  type        = string
+  default     = ""
+}
+
+variable "apps_domain" {
+  description = "Base hostname used for planned application CNAME targets. Replace the example before production."
+  type        = string
+  default     = "apps.example.com"
+}

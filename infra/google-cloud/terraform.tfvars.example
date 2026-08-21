@@ -4,3 +4,6 @@ zone          = "us-west1-b"
 instance_name = "managed-oss-host"
 machine_type  = "e2-micro"
 disk_size_gb  = 30
+control_plane_image  = "ghcr.io/rohanarun/managed-oss-cloud:latest"
+control_plane_domain = "control.example.com"
+apps_domain          = "apps.example.com"
