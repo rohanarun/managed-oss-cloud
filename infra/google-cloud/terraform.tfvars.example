@@ -1,0 +1,6 @@
+project_id    = "your-google-cloud-project"
+region        = "us-west1"
+zone          = "us-west1-b"
+instance_name = "managed-oss-host"
+machine_type  = "e2-micro"
+disk_size_gb  = 30
