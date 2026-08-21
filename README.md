@@ -1,45 +1,60 @@
-# Managed OSS Cloud
+# OpenDock
 
-Managed OSS Cloud is an open-source control plane for running business software through one dashboard and custom domains. It supports a managed one-click service and a self-hosted Google Cloud path.
+OpenDock is an MIT-licensed control plane for running open-source business software through one account, one dashboard, and custom domains. It supports a managed service and a self-hosted Google Cloud path.
 
-The current MVP provides:
+[Hosted preview](https://managed-oss-cloud.onrender.com) · [Google Cloud guide](docs/google-cloud.md)
 
-- a catalogue of open-source alternatives;
-- a capacity planner that packs compatible lightweight apps into one customer server;
-- an automatic split recommendation for heavy or incompatible apps;
-- configurable Render plan prices and platform fees;
-- dry-run server creation, server inventory, custom-domain CNAME instructions, and plan upgrades;
-- a typed Render API client for image-backed services, custom domains, plan changes, and deploys;
-- a Google Cloud Terraform module for a free-tier-eligible Docker host with stable DNS;
-- a production database schema for users, billing, installations, domains, and idempotency.
+## What works
 
-## Product paths
+- Public product site with an audited application catalogue.
+- Signup, login, logout, salted `scrypt` password hashes, HTTP-only session cookies, rate limits, and same-origin mutation checks.
+- PostgreSQL repositories for durable users, sessions, per-user server plans, domains, subscriptions, billing ledger entries, and idempotency records.
+- Account-isolated dashboard for catalogue selection, server capacity, custom-domain CNAME instructions, and upgrade planning.
+- Configurable machine prices and a separately itemized percentage/minimum management fee.
+- Capacity checks that retain a memory safety reserve and split incompatible workloads.
+- Terraform for an IAP-protected Google Compute Engine host.
+- Dry-run safety: checkout and provider mutations fail closed until the required billing and provisioning tests pass.
 
-### Managed
+The hosted preview deliberately uses temporary in-memory accounts because no production database or billing account has been attached. It creates plans, not paid cloud resources.
 
-Customers choose applications, connect a custom domain, and pay the infrastructure share plus a transparent management fee. Lightweight applications can share pooled compute; capacity-heavy or higher-isolation applications move to a larger or dedicated service.
+## Catalogue status
 
-### Self-hosted
+| Product category | Upstream project | Pinned version | Licence | Status |
+| --- | --- | --- | --- | --- |
+| Calendly-style scheduling | [Cal DIY](https://github.com/calcom/cal.diy) | v6.2.0 | MIT | Integration verification |
+| Mailchimp-style newsletters | [listmonk](https://github.com/knadh/listmonk) | v6.2.0 | AGPL-3.0 | Planning enabled |
+| DocuSign-style signatures | [Documenso](https://github.com/documenso/documenso) | v2.17.0 | AGPL-3.0 | Integration verification |
+| Jotform-style forms | [HeyForm](https://github.com/heyform/heyform) | v3.0.1 | AGPL-3.0 | Integration verification |
+| Uptime monitoring | [Uptime Kuma](https://github.com/louislam/uptime-kuma) | 2.5.0 | MIT | Planning enabled |
+| Web analytics | [Umami](https://github.com/umami-software/umami) | v3.3.1 | MIT | Planning enabled |
 
-Customers deploy the same stack into their own Google Cloud project. The software is free and MIT licensed; Google bills any infrastructure outside the account's eligible allowances. See [the Google Cloud guide](docs/google-cloud.md).
-
-The catalogue can grow without a software licence limit. A server still has finite CPU, memory, and storage, so the capacity planner prevents unsafe combinations and recommends an upgrade.
-
-## Important deployment boundary
-
-Render exposes one public HTTP port per web service and recommends separate services for application isolation. The shared-server model therefore requires a purpose-built appliance image containing the supported app processes and reverse proxy. Arbitrary Docker Compose stacks cannot be installed dynamically inside a normal Render service.
-
-The control plane defaults to `PROVISIONING_MODE=dry-run`. It must remain in dry-run until the appliance images, persistent database repository, authentication, Stripe payment flow, and app-specific backup/upgrade checks are connected.
+OpenDock packages and operates upstream software; it does not impersonate the commercial products those projects can replace. Every application retains its upstream licence, trademarks, and update policy.
 
 ## Local development
 
 ```sh
-cp .env.example .env
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open `http://localhost:5173`. Without `DATABASE_URL`, the app clearly reports `preview-memory` persistence.
+
+## Production environment
+
+```text
+DATABASE_URL=postgresql://...
+DATABASE_SSL=true
+PUBLIC_APP_URL=https://control.example.com
+PUBLIC_HOST_TARGET=apps.example.com
+PROVISIONING_MODE=dry-run
+PLAN_CATALOG_JSON={...}
+PLATFORM_FEE_PERCENT=12
+PLATFORM_FEE_MIN_CENTS=200
+STRIPE_SECRET_KEY=               # leave empty until checkout is complete
+STRIPE_WEBHOOK_SECRET=           # leave empty until webhook verification is complete
+```
+
+Machine prices are configuration, not application constants. Set them from the current provider quote for the selected project and region.
 
 ## Validation
 
@@ -49,20 +64,19 @@ npm run typecheck
 npm run build
 ```
 
-## Pricing
+The tests cover price/capacity policy, provider requests, secure account flows, cross-account isolation, domain changes, upgrade planning, and fail-closed billing.
 
-Render plan prices are supplied through `RENDER_PLAN_CATALOG_JSON`. The management fee is configured with `PLATFORM_FEE_PERCENT` and `PLATFORM_FEE_MIN_CENTS`. This keeps billing policy out of application logic and makes price changes auditable.
+## Remaining live-provisioning gates
 
-## Live provisioning checklist
+The current release is a safe control-plane MVP, not a production hosting marketplace. Before `PROVISIONING_MODE=live`:
 
-1. Pin and audit each catalogue app version and license.
-2. Build and publish signed appliance images for bundle-compatible combinations.
-3. Replace the development installation store with the PostgreSQL schema in `db/schema.sql`.
-4. Add account authentication and session enforcement.
-5. Connect Stripe Checkout, metered invoice items, and verified webhooks.
-6. Require a valid payment method and idempotency key before every paid Render mutation.
-7. Set `PROVISIONING_MODE=live` only after an end-to-end test workspace succeeds.
+1. Publish and digest-pin every application image and its dependencies.
+2. Pass install, health, upgrade, rollback, encrypted backup, and restore tests per application.
+3. Add a transactional provisioning queue and provider reconciliation worker.
+4. Complete Stripe Checkout plus signed, replay-safe webhooks and idempotent refunds.
+5. Prove tenant isolation, resource limits, secret rotation, outbound-email abuse controls, and incident recovery.
+6. Confirm the exact Google Cloud account, project, region, quota, and recurring price before creating resources.
 
 ## License
 
-MIT. Catalogue applications retain their own upstream licenses.
+OpenDock is MIT licensed. Catalogue applications retain their own upstream licenses.

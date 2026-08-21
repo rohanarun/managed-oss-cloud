@@ -9,12 +9,14 @@ services:
         value: 10000
       - key: PROVISIONING_MODE
         value: dry-run
+      - key: PUBLIC_APP_URL
+        value: https://managed-oss-cloud.onrender.com
+      - key: PUBLIC_HOST_TARGET
+        value: managed-oss-cloud.onrender.com
       - key: RENDER_API_KEY
         sync: false
       - key: RENDER_OWNER_ID
         sync: false
-      - key: SESSION_SECRET
-        generateValue: true
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

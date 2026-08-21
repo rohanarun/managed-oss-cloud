@@ -1,15 +1,18 @@
 [
   {
-    "id": "calcom",
-    "name": "Cal.com",
+    "id": "cal-diy",
+    "name": "Cal DIY",
     "replaces": "Calendly",
     "category": "Scheduling",
-    "license": "AGPL-3.0",
-    "sourceUrl": "https://github.com/calcom/cal.com",
-    "description": "Scheduling, availability, team routing, and booking pages.",
-    "memoryBudgetMb": 640,
+    "license": "MIT",
+    "sourceUrl": "https://github.com/calcom/cal.diy",
+    "description": "Booking pages, availability, team routing, and calendar connections.",
+    "version": "v6.2.0",
+    "memoryBudgetMb": 768,
     "bundleEligible": false,
-    "status": "integration"
+    "status": "integration",
+    "requirements": ["PostgreSQL", "Redis", "SMTP", "calendar OAuth"],
+    "deploymentNote": "Awaiting end-to-end OAuth and upgrade testing."
   },
   {
     "id": "documenso",
@@ -18,22 +21,28 @@
     "category": "Documents",
     "license": "AGPL-3.0",
     "sourceUrl": "https://github.com/documenso/documenso",
-    "description": "Electronic signatures and document workflows.",
-    "memoryBudgetMb": 512,
+    "description": "Electronic signatures, templates, recipients, and document workflows.",
+    "version": "v2.17.0",
+    "memoryBudgetMb": 640,
     "bundleEligible": false,
-    "status": "integration"
+    "status": "integration",
+    "requirements": ["PostgreSQL", "SMTP", "object storage"],
+    "deploymentNote": "Awaiting signed-document backup and restore verification."
   },
   {
-    "id": "mattermost",
-    "name": "Mattermost",
-    "replaces": "Slack",
-    "category": "Collaboration",
-    "license": "AGPL-3.0 / MIT",
-    "sourceUrl": "https://github.com/mattermost/mattermost",
-    "description": "Team messaging, channels, files, and integrations.",
-    "memoryBudgetMb": 1024,
+    "id": "heyform",
+    "name": "HeyForm",
+    "replaces": "Jotform",
+    "category": "Forms",
+    "license": "AGPL-3.0",
+    "sourceUrl": "https://github.com/heyform/heyform",
+    "description": "Hosted forms, logic, themes, submissions, and collaboration.",
+    "version": "v3.0.1",
+    "memoryBudgetMb": 640,
     "bundleEligible": false,
-    "status": "integration"
+    "status": "integration",
+    "requirements": ["MongoDB", "Redis", "SMTP"],
+    "deploymentNote": "Awaiting attachment storage and migration testing."
   },
   {
     "id": "listmonk",
@@ -42,22 +51,13 @@
     "category": "Email",
     "license": "AGPL-3.0",
     "sourceUrl": "https://github.com/knadh/listmonk",
-    "description": "Newsletters, lists, templates, and campaign analytics.",
-    "memoryBudgetMb": 160,
+    "description": "Newsletters, lists, templates, segmentation, and campaign analytics.",
+    "version": "v6.2.0",
+    "memoryBudgetMb": 256,
     "bundleEligible": true,
-    "status": "beta"
-  },
-  {
-    "id": "linkding",
-    "name": "linkding",
-    "replaces": "Pocket",
-    "category": "Knowledge",
-    "license": "MIT",
-    "sourceUrl": "https://github.com/sissbruecker/linkding",
-    "description": "Private bookmarking with tagging, search, and browser integrations.",
-    "memoryBudgetMb": 128,
-    "bundleEligible": true,
-    "status": "beta"
+    "status": "ready",
+    "requirements": ["PostgreSQL", "SMTP provider"],
+    "deploymentNote": "Planning enabled; live provisioning remains billing-gated."
   },
   {
     "id": "uptime-kuma",
@@ -66,9 +66,27 @@
     "category": "Monitoring",
     "license": "MIT",
     "sourceUrl": "https://github.com/louislam/uptime-kuma",
-    "description": "Status monitoring, notifications, and public status pages.",
-    "memoryBudgetMb": 160,
+    "description": "Service monitoring, notifications, and public status pages.",
+    "version": "2.5.0",
+    "memoryBudgetMb": 256,
     "bundleEligible": true,
-    "status": "beta"
+    "status": "ready",
+    "requirements": ["persistent volume"],
+    "deploymentNote": "Planning enabled; live provisioning remains billing-gated."
+  },
+  {
+    "id": "umami",
+    "name": "Umami",
+    "replaces": "Google Analytics",
+    "category": "Analytics",
+    "license": "MIT",
+    "sourceUrl": "https://github.com/umami-software/umami",
+    "description": "Privacy-focused website analytics with events and team access.",
+    "version": "v3.3.1",
+    "memoryBudgetMb": 384,
+    "bundleEligible": true,
+    "status": "ready",
+    "requirements": ["PostgreSQL"],
+    "deploymentNote": "Planning enabled; live provisioning remains billing-gated."
   }
 ]

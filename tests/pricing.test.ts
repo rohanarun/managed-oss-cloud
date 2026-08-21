@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildQuote } from "../src/shared/pricing";
 import type { CatalogApp } from "../src/shared/types";
 
-const lightApp: CatalogApp = { id: "one", name: "One", replaces: "A", category: "Test", license: "MIT", sourceUrl: "https://example.com", description: "Test", memoryBudgetMb: 128, bundleEligible: true, status: "beta" };
+const lightApp: CatalogApp = { id: "one", name: "One", replaces: "A", category: "Test", license: "MIT", sourceUrl: "https://example.com", description: "Test", version: "1.0.0", memoryBudgetMb: 128, bundleEligible: true, status: "ready", requirements: [], deploymentNote: "Test" };
 const heavyApp: CatalogApp = { ...lightApp, id: "two", memoryBudgetMb: 640, bundleEligible: false };
 const policy = {
   plans: [
-    { id: "starter", memoryMb: 512, cpu: .5, monthlyCents: 700 },
-    { id: "standard", memoryMb: 2048, cpu: 1, monthlyCents: 2500 },
+    { id: "starter", label: "Starter", memoryMb: 512, cpu: .5, monthlyCents: 700 },
+    { id: "standard", label: "Standard", memoryMb: 2048, cpu: 1, monthlyCents: 2500 },
   ],
   platformFeePercent: 12,
   platformFeeMinimumCents: 200,

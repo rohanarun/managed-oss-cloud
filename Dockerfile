@@ -13,5 +13,6 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server
 COPY --from=build /app/catalog ./catalog
+COPY --from=build /app/db ./db
 EXPOSE 10000
 CMD ["npm", "start"]

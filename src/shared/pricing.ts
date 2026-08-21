@@ -17,9 +17,9 @@ export function buildQuote(apps: CatalogApp[], policy: PricingPolicy): Quote {
     .sort((a, b) => a.memoryMb - b.memoryMb)
     .find((plan) => requestedMemoryMb <= plan.memoryMb * policy.maximumSafeUtilization) ?? null;
   const requiresSplit = !compatibleWithBundle || recommendedPlan === null;
-  const renderMonthlyCents = recommendedPlan?.monthlyCents ?? 0;
-  const percentageFee = Math.ceil(renderMonthlyCents * (policy.platformFeePercent / 100));
-  const platformFeeCents = renderMonthlyCents
+  const infrastructureMonthlyCents = recommendedPlan?.monthlyCents ?? 0;
+  const percentageFee = Math.ceil(infrastructureMonthlyCents * (policy.platformFeePercent / 100));
+  const platformFeeCents = recommendedPlan
     ? Math.max(percentageFee, policy.platformFeeMinimumCents)
     : 0;
 
@@ -29,12 +29,12 @@ export function buildQuote(apps: CatalogApp[], policy: PricingPolicy): Quote {
     reservedMemoryMb: policy.systemReserveMb,
     compatibleWithBundle,
     recommendedPlan,
-    renderMonthlyCents,
+    infrastructureMonthlyCents,
     platformFeeCents,
-    totalMonthlyCents: renderMonthlyCents + platformFeeCents,
+    totalMonthlyCents: infrastructureMonthlyCents + platformFeeCents,
     requiresSplit,
     explanation: requiresSplit
-      ? "This selection contains a heavy or isolated application. The control plane will split it into another service instead of overloading the shared server."
-      : `All selected applications fit the ${recommendedPlan?.id ?? "configured"} server within the safety reserve.`,
+      ? "This selection includes an isolated workload. It will be separated instead of overloading the shared server."
+      : `All selected applications fit the ${recommendedPlan?.label ?? "configured"} server with a safety reserve.`,
   };
 }
