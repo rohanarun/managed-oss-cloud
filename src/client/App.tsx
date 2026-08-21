@@ -34,7 +34,7 @@ function useRoute() {
 export function App() {
   const { path, navigate } = useRoute();
   const [catalog, setCatalog] = useState<CatalogApp[]>([]);
-  const [config, setConfig] = useState<PublicConfig>({ productName: "OpenDock", provisioningMode: "dry-run", persistence: "preview-memory", billingReady: false, platformFeePercent: 12, platformFeeMinimumCents: 200, plans: [] });
+  const [config, setConfig] = useState<PublicConfig>({ productName: "Managed OSS Cloud", provisioningMode: "dry-run", persistence: "preview-memory", billingReady: false, platformFeePercent: 12, platformFeeMinimumCents: 200, plans: [] });
   const [user, setUser] = useState<AccountUser | null>(null);
   const [loaded, setLoaded] = useState(false);
 

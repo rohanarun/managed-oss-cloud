@@ -1,6 +1,6 @@
-# OpenDock
+# Managed OSS Cloud
 
-OpenDock is an MIT-licensed control plane for running open-source business software through one account, one dashboard, and custom domains. It supports a managed service and a self-hosted Google Cloud path.
+Managed OSS Cloud is an MIT-licensed control plane for running open-source business software through one account, one dashboard, and custom domains. It supports a managed service and a self-hosted Google Cloud path.
 
 [Hosted preview](https://managed-oss-cloud.onrender.com) · [Google Cloud guide](docs/google-cloud.md)
 
@@ -28,7 +28,7 @@ The hosted preview deliberately uses temporary in-memory accounts because no pro
 | Uptime monitoring | [Uptime Kuma](https://github.com/louislam/uptime-kuma) | 2.5.0 | MIT | Planning enabled |
 | Web analytics | [Umami](https://github.com/umami-software/umami) | v3.3.1 | MIT | Planning enabled |
 
-OpenDock packages and operates upstream software; it does not impersonate the commercial products those projects can replace. Every application retains its upstream licence, trademarks, and update policy.
+Managed OSS Cloud packages and operates upstream software; it does not impersonate the commercial products those projects can replace. Every application retains its upstream licence, trademarks, and update policy.
 
 ## Local development
 
@@ -79,4 +79,4 @@ The current release is a safe control-plane MVP, not a production hosting market
 
 ## License
 
-OpenDock is MIT licensed. Catalogue applications retain their own upstream licenses.
+Managed OSS Cloud is MIT licensed. Catalogue applications retain their own upstream licenses.

@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ComputePlan } from "../shared/types.js";
 
 const environmentSchema = z.object({
-  PRODUCT_NAME: z.string().default("OpenDock"),
+  PRODUCT_NAME: z.string().default("Managed OSS Cloud"),
   PORT: z.coerce.number().int().positive().default(8787),
   PUBLIC_APP_URL: z.string().url().default("http://localhost:5173"),
   PUBLIC_HOST_TARGET: z.string().default("apps.example.com"),
