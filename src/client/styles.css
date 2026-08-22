@@ -239,6 +239,10 @@ a { color: inherit; text-decoration: none; }
 .domain-list span { display: flex; align-items: center; gap: 8px; }
 .domain-list i { width: 7px; height: 7px; border-radius: 50%; background: #e9b949; }
 .domain-list button { display: flex; gap: 6px; border: 0; color: #8ba5ff; background: none; cursor: pointer; }
+.managed-app { margin: 10px 0; padding: 13px 15px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.04); font-size: 11px; }
+.managed-app strong { color: #93d9be; font-size: 9px; text-transform: uppercase; }
+.managed-app a { display: flex; align-items: center; gap: 5px; color: #8ba5ff; text-decoration: none; }
+.managed-app svg { width: 13px; height: 13px; }
 .billing-page { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .billing-page article { padding: 30px; border: 1px solid #dedcd6; border-radius: 18px; background: white; }
 .billing-page article:first-child > svg { width: 42px; height: 42px; color: #2457ff; }

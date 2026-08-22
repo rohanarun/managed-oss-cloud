@@ -1,3 +1,47 @@
+resource "google_project_service" "secret_manager" {
+  project            = var.project_id
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_service_account" "runtime" {
+  project      = var.project_id
+  account_id   = "managed-oss-host"
+  display_name = "Managed OSS host runtime"
+}
+
+resource "google_secret_manager_secret_iam_member" "stripe" {
+  project    = var.project_id
+  secret_id  = var.stripe_secret_name
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.runtime.email}"
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_secret_manager_secret_iam_member" "stripe_webhook" {
+  count      = var.billing_mode == "live" ? 1 : 0
+  project    = var.project_id
+  secret_id  = var.stripe_webhook_secret_name
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.runtime.email}"
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_secret_manager_secret_iam_member" "backup_key" {
+  project    = var.project_id
+  secret_id  = var.backup_key_secret_name
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.runtime.email}"
+  depends_on = [google_project_service.secret_manager]
+}
+
+resource "google_storage_bucket_iam_member" "backup_writer" {
+  count  = var.backup_bucket != "" ? 1 : 0
+  bucket = var.backup_bucket
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.runtime.email}"
+}
+
 resource "google_compute_address" "managed_oss" {
   name   = "${var.instance_name}-ipv4"
   region = var.region
@@ -67,12 +111,17 @@ resource "google_compute_instance" "managed_oss" {
     enable-oslogin = "TRUE"
   }
 
+  service_account {
+    email  = google_service_account.runtime.email
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+
   metadata_startup_script = <<-STARTUP
     #!/usr/bin/env bash
     set -euo pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y docker.io docker-compose ca-certificates curl openssl
+    apt-get install -y docker.io docker-compose ca-certificates curl jq openssl
     systemctl enable --now docker
     install -d -m 0750 /opt/managed-oss/apps /opt/managed-oss/backups /opt/managed-oss/config
     if [ ! -f /opt/managed-oss/config/runtime.env ]; then
@@ -82,6 +131,26 @@ resource "google_compute_instance" "managed_oss" {
     POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
     EOF
     fi
+    access_secret() {
+      local secret_name="$1"
+      local access_token
+      access_token="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r .access_token)"
+      curl -fsS -H "Authorization: Bearer $${access_token}" "https://secretmanager.googleapis.com/v1/projects/${var.project_id}/secrets/$${secret_name}/versions/latest:access" | jq -r .payload.data | base64 -d
+    }
+    umask 077
+    STRIPE_SECRET_KEY="$(access_secret '${var.stripe_secret_name}')"
+    cat > /opt/managed-oss/config/billing.env <<EOF
+    STRIPE_SECRET_KEY=$${STRIPE_SECRET_KEY}
+    STRIPE_PUBLISHABLE_KEY=${var.stripe_publishable_key}
+    BILLING_MODE=${var.billing_mode}
+    EOF
+    ${var.billing_mode == "live" ? "STRIPE_WEBHOOK_SECRET=\"$(access_secret '${var.stripe_webhook_secret_name}')\"\nprintf 'STRIPE_WEBHOOK_SECRET=%s\\n' \"$${STRIPE_WEBHOOK_SECRET}\" >> /opt/managed-oss/config/billing.env" : "printf 'STRIPE_WEBHOOK_SECRET=\\n' >> /opt/managed-oss/config/billing.env"}
+    BACKUP_KEY_HEX="$(access_secret '${var.backup_key_secret_name}')"
+    cat > /opt/managed-oss/config/worker.env <<EOF
+    BACKUP_KEY_HEX=$${BACKUP_KEY_HEX}
+    BACKUP_BUCKET=${var.backup_bucket}
+    EOF
+    touch /opt/managed-oss/config/apps.caddy
     cat > /opt/managed-oss/config/docker-compose.yml <<'EOF'
     version: "3.9"
     services:
@@ -106,16 +175,43 @@ resource "google_compute_instance" "managed_oss" {
         depends_on:
           database:
             condition: service_healthy
-        env_file: runtime.env
+        env_file:
+          - runtime.env
+          - billing.env
         environment:
           PORT: 8787
           DATABASE_URL: postgresql://opendock:$${POSTGRES_PASSWORD}@database:5432/opendock
           DATABASE_SSL: "false"
           PUBLIC_APP_URL: ${var.control_plane_domain != "" ? "https://${var.control_plane_domain}" : "http://${google_compute_address.managed_oss.address}"}
           PUBLIC_HOST_TARGET: ${var.apps_domain}
-          PROVISIONING_MODE: dry-run
+          PLATFORM_IPV4: ${google_compute_address.managed_oss.address}
+          PROVISIONING_MODE: ${var.provisioning_mode}
         expose:
           - "8787"
+      provisioning-worker:
+        image: ${var.control_plane_image}
+        restart: unless-stopped
+        command: ["npm", "run", "worker"]
+        depends_on:
+          database:
+            condition: service_healthy
+        env_file:
+          - runtime.env
+          - worker.env
+        environment:
+          DATABASE_URL: postgresql://opendock:$${POSTGRES_PASSWORD}@database:5432/opendock
+          DATABASE_SSL: "false"
+          PROVISIONING_WORKER: ${var.provisioning_worker}
+          HOST_APPS_ROOT: /opt/managed-oss/apps/workspaces
+          HOST_CADDY_CONFIG: /opt/managed-oss/config/apps.caddy
+          PLATFORM_DOCKER_NETWORK: config_default
+          PLATFORM_CADDY_CONTAINER: config_caddy_1
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+          - /opt/managed-oss/apps:/opt/managed-oss/apps
+          - /opt/managed-oss/config:/opt/managed-oss/config
+        profiles:
+          - ${var.provisioning_worker == "docker" ? "worker" : "disabled-worker"}
       caddy:
         image: caddy:2.10-alpine
         restart: unless-stopped
@@ -124,6 +220,7 @@ resource "google_compute_instance" "managed_oss" {
           - "443:443"
         volumes:
           - /opt/managed-oss/config/Caddyfile:/etc/caddy/Caddyfile:ro
+          - /opt/managed-oss/config/apps.caddy:/etc/caddy/apps.caddy:ro
           - /opt/managed-oss/apps/caddy-data:/data
           - /opt/managed-oss/apps/caddy-config:/config
     EOF
@@ -132,13 +229,14 @@ resource "google_compute_instance" "managed_oss" {
       encode zstd gzip
       reverse_proxy control-plane:8787
     }
+    import /etc/caddy/apps.caddy
     EOF
     cd /opt/managed-oss/config
     set -a
     source runtime.env
     set +a
     docker-compose pull
-    docker-compose up -d
+    COMPOSE_PROFILES=${var.provisioning_worker == "docker" ? "worker" : ""} docker-compose up -d
     touch /opt/managed-oss/.host-ready
   STARTUP
 

@@ -9,9 +9,8 @@ const environmentSchema = z.object({
   PROVISIONING_MODE: z.enum(["dry-run", "live"]).default("dry-run"),
   DATABASE_URL: z.string().optional(),
   DATABASE_SSL: z.enum(["true", "false"]).default("true"),
-  RENDER_API_KEY: z.string().optional(),
-  RENDER_OWNER_ID: z.string().optional(),
-  RENDER_REGION: z.string().default("oregon"),
+  BILLING_MODE: z.enum(["disabled", "live"]).default("disabled"),
+  STRIPE_PUBLISHABLE_KEY: z.string().optional(),
   PLAN_CATALOG_JSON: z.string().default(
     '{"micro":{"label":"Micro","memoryMb":1024,"cpu":0.25,"monthlyCents":0},"small":{"label":"Small","memoryMb":2048,"cpu":0.5,"monthlyCents":0},"medium":{"label":"Medium","memoryMb":4096,"cpu":1,"monthlyCents":0}}',
   ),
@@ -21,6 +20,15 @@ const environmentSchema = z.object({
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  PLATFORM_IPV4: z.ipv4().optional(),
+  PROVISIONING_WORKER: z.enum(["disabled", "docker"]).default("disabled"),
+  PROVISIONING_POLL_MILLISECONDS: z.coerce.number().int().min(250).max(60_000).default(2_000),
+  HOST_APPS_ROOT: z.string().default("/opt/managed-oss/apps/workspaces"),
+  HOST_CADDY_CONFIG: z.string().default("/opt/managed-oss/config/apps.caddy"),
+  PLATFORM_DOCKER_NETWORK: z.string().default("config_default"),
+  PLATFORM_CADDY_CONTAINER: z.string().default("config_caddy_1"),
+  BACKUP_BUCKET: z.string().optional(),
+  BACKUP_KEY_HEX: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
 });
 
 const raw = environmentSchema.parse(process.env);

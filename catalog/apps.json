@@ -67,7 +67,7 @@
     "license": "MIT",
     "sourceUrl": "https://github.com/louislam/uptime-kuma",
     "description": "Service monitoring, notifications, and public status pages.",
-    "version": "2.5.0",
+    "version": "2.3.2",
     "memoryBudgetMb": 256,
     "bundleEligible": true,
     "status": "ready",

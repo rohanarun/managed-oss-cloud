@@ -7,6 +7,7 @@
     "dev": "concurrently -k \"vite\" \"tsx watch src/server/index.ts\"",
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
+    "worker": "node dist-server/server/provisioning-worker.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
@@ -20,6 +21,7 @@
     "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "stripe": "^22.5.0",
     "zod": "^4.1.5"
   },
   "devDependencies": {
