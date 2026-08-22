@@ -228,7 +228,7 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               security_opt: ["no-new-privileges:true"],
             },
             app: {
-              image: "heyform/community-edition:v3.0.1@sha256:d74d6605ed8bd3dcf3681dbfe9e39d4c5a2d67de87fd2f3964bf9460aeede911",
+              image: "ghcr.io/rohanarun/managed-oss-cloud/heyform-managed:sha-e1e751e@sha256:8c47c4ab9c9f6884baa660a94791dfc81bec76789df7dd452526979bb8d01e6e",
               container_name: primaryContainer,
               restart: "unless-stopped",
               depends_on: { permissions: { condition: "service_completed_successfully" }, mongo: { condition: "service_healthy" }, redis: { condition: "service_healthy" } },

@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import type { AgentJob, ApplicationInstance } from "../shared/types.js";
 import { buildRuntimeManifest, type RuntimeManifest } from "./app-manifests.js";
+import { updateComposeApplicationImage } from "./compose-upgrade.js";
 import { config } from "./config.js";
 
 const execFileAsync = promisify(execFile);
@@ -264,7 +265,13 @@ async function install(job: AgentJob, agent: AgentClient) {
 async function changeLifecycle(job: AgentJob, agent: AgentClient) {
   for (const instance of job.applications) {
     const composePath = path.join(workspacePath(instance), "compose.json");
-    if (job.action === "upgrade") await docker(["compose", "-f", composePath, "pull"]);
+    if (job.action === "upgrade") {
+      const targetManifest = buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK });
+      const targetImage = targetManifest.compose.services.app?.image;
+      if (typeof targetImage !== "string") throw new Error(`Application ${instance.appId} has no upgradeable app image.`);
+      await updateComposeApplicationImage(composePath, targetImage);
+      await docker(["compose", "-f", composePath, "pull", "app"]);
+    }
     if (job.action === "upgrade" || job.action === "start") await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
     if (job.action === "stop") await docker(["compose", "-f", composePath, "stop"]);
     if (job.action === "uninstall") {
