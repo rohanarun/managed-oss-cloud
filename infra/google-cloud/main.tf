@@ -172,6 +172,14 @@ resource "google_compute_instance" "managed_oss" {
       control-plane:
         image: ${var.control_plane_image}
         restart: unless-stopped
+        user: node
+        read_only: true
+        tmpfs:
+          - /tmp:size=16m,mode=1777
+        security_opt:
+          - no-new-privileges:true
+        cap_drop:
+          - ALL
         depends_on:
           database:
             condition: service_healthy
