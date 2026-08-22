@@ -46,6 +46,10 @@ const environmentSchema = z.object({
   GATEWAY_POLL_MILLISECONDS: z.coerce.number().int().min(1_000).max(60_000).default(5_000),
   CONTROL_PLANE_DOMAIN: z.string().optional(),
   CONTROL_PLANE_UPSTREAM: z.string().default("control-plane:8787"),
+  GOOGLE_OAUTH_CLIENT_ID: z.string().min(10).optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(10).optional(),
+  GOOGLE_OAUTH_STATE_SECRET: z.string().min(32).optional(),
+  GOOGLE_OAUTH_CALLBACK_URL: z.string().url().optional(),
 });
 
 const raw = environmentSchema.parse(process.env);

@@ -13,6 +13,13 @@ import { config } from "./config.js";
 const execFileAsync = promisify(execFile);
 const memoryReserveBytes = 160 * 1024 * 1024;
 
+function manifestOptions() {
+  const googleOAuth = config.GOOGLE_OAUTH_CLIENT_ID && config.GOOGLE_OAUTH_CLIENT_SECRET && config.GOOGLE_OAUTH_STATE_SECRET && config.GOOGLE_OAUTH_CALLBACK_URL
+    ? { clientId: config.GOOGLE_OAUTH_CLIENT_ID, clientSecret: config.GOOGLE_OAUTH_CLIENT_SECRET, stateSecret: config.GOOGLE_OAUTH_STATE_SECRET, callbackUrl: config.GOOGLE_OAUTH_CALLBACK_URL }
+    : undefined;
+  return { platformNetwork: config.PLATFORM_DOCKER_NETWORK, googleOAuth };
+}
+
 interface WorkerReport {
   status: "succeeded" | "failed";
   error?: string;
@@ -251,7 +258,7 @@ async function install(job: AgentJob, agent: AgentClient) {
   const requestedId = typeof job.payload.applicationInstanceId === "string" ? job.payload.applicationInstanceId : undefined;
   const targets = requestedId ? job.applications.filter((instance) => instance.id === requestedId) : job.applications.filter((instance) => instance.state === "queued" || instance.state === "provisioning");
   if (!targets.length) throw new Error("Install job did not include a queued application.");
-  const manifests = targets.map((instance) => buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK }));
+  const manifests = targets.map((instance) => buildRuntimeManifest(instance, manifestOptions()));
   await assertCapacity(manifests);
   for (let index = 0; index < targets.length; index += 1) {
     const instance = targets[index];
@@ -266,10 +273,15 @@ async function changeLifecycle(job: AgentJob, agent: AgentClient) {
   for (const instance of job.applications) {
     const composePath = path.join(workspacePath(instance), "compose.json");
     if (job.action === "upgrade") {
-      const targetManifest = buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK });
+      const targetManifest = buildRuntimeManifest(instance, manifestOptions());
       const targetImage = targetManifest.compose.services.app?.image;
       if (typeof targetImage !== "string") throw new Error(`Application ${instance.appId} has no upgradeable app image.`);
-      await updateComposeApplicationImage(composePath, targetImage);
+      const targetEnvironment = targetManifest.compose.services.app?.environment;
+      const environmentRecord = targetEnvironment && typeof targetEnvironment === "object" && !Array.isArray(targetEnvironment) ? targetEnvironment as Record<string, unknown> : undefined;
+      const managedEnvironment = instance.appId === "heyform" && environmentRecord
+        ? Object.fromEntries(["GOOGLE_LOGIN_CLIENT_ID", "GOOGLE_LOGIN_CLIENT_SECRET", "MANAGED_OAUTH_STATE_SECRET", "MANAGED_GOOGLE_CALLBACK_URL"].flatMap((key) => typeof environmentRecord[key] === "string" ? [[key, environmentRecord[key] as string]] : []))
+        : {};
+      await updateComposeApplicationImage(composePath, targetImage, managedEnvironment);
       await docker(["compose", "-f", composePath, "pull", "app"]);
     }
     if (job.action === "upgrade" || job.action === "start") await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
