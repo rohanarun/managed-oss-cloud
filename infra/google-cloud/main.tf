@@ -361,7 +361,7 @@ resource "google_compute_instance" "worker" {
     initialize_params {
       image = "debian-cloud/debian-12"
       size  = var.worker_disk_size_gb
-      type  = "pd-balanced"
+      type  = "pd-standard"
     }
   }
 
@@ -407,6 +407,7 @@ resource "google_compute_instance" "worker" {
     WORKER_MACHINE_TYPE=${var.worker_machine_type}
     WORKER_CAPACITY_MEMORY_MB=${var.worker_capacity_memory_mb}
     WORKER_CAPACITY_CPU_MILLIS=${var.worker_capacity_cpu_millis}
+    WORKER_CAPACITY_STORAGE_GB=${var.worker_capacity_storage_gb}
     WORKER_SYSTEM_RESERVE_MEMORY_MB=${var.worker_system_reserve_memory_mb}
     BACKUP_KEY_HEX=$${BACKUP_KEY_HEX}
     BACKUP_BUCKET=${var.backup_bucket}
@@ -482,6 +483,10 @@ resource "google_compute_instance" "worker" {
     precondition {
       condition     = var.worker_capacity_memory_mb > var.worker_system_reserve_memory_mb
       error_message = "Worker schedulable memory must exceed the system reserve."
+    }
+    precondition {
+      condition     = var.worker_capacity_storage_gb < var.worker_disk_size_gb
+      error_message = "Advertised worker storage must leave disk space for the OS, images, and operations."
     }
   }
 

@@ -15,7 +15,7 @@ Managed OSS Cloud is an MIT-licensed control plane for running open-source busin
 - Terraform for an IAP-protected control plane and a horizontally scalable pool of private Google Compute Engine workers.
 - Transactional Stripe checkout and signed, replay-safe webhook handling that queues provisioning only after payment.
 - Authenticated remote Docker agents for install, start, stop, update, routing, encrypted backup, and restore jobs. Workers never receive PostgreSQL or Stripe credentials.
-- Capacity-aware placement, tenant-to-worker affinity, renewable job leases, and per-worker CPU/memory reservations.
+- Capacity-aware per-application placement, renewable job leases, and per-worker CPU, memory, and storage reservations.
 - DNS verification, CNAME targets, a central dynamic Caddy gateway, private worker ingress, and automatic TLS after ownership resolves.
 - Dry-run safety: checkout and provider mutations fail closed independently until their production gates pass.
 
@@ -64,6 +64,16 @@ GATEWAY_RECONCILER_TOKEN=        # Secret Manager value used only for route disc
 
 Machine prices are configuration, not application constants. Set them from the current provider quote for the selected project and region.
 
+The hosted defaults expose three pooled-capacity plans. They are customer quotas backed by the private worker fleet, not dedicated VM promises:
+
+| Plan | Monthly total | Memory quota | CPU quota | Storage quota | Service instances |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Starter | $7 | 1.5 GB | 0.5 vCPU | 10 GB | 2 |
+| Scale | $50 | 6 GB | 2 vCPU | 100 GB | 12 |
+| Fleet | $200 | 24 GB | 8 vCPU | 500 GB | 50 |
+
+The total contains an itemized infrastructure allocation plus the configured management fee. A user can clone the same verified service multiple times; every clone receives a separate hostname, container project, volume reservation, and placement decision. Upgrades reconcile the existing Stripe subscription before the stored quota changes.
+
 ## Validation
 
 ```sh
@@ -76,7 +86,7 @@ The tests cover price/capacity policy, secure account flows, cross-account isola
 
 ## Scale model
 
-The public `e2-medium` is the control plane, not the place customer tools run. It owns accounts, scheduling, billing state, PostgreSQL, and edge TLS. Customer containers and persistent volumes run on private workers with no public IP. A worker is added when its advertised reservations no longer fit another installation; existing tenants remain pinned to their worker for lifecycle and restore operations.
+The public `e2-medium` is the control plane, not the place customer tools run. It owns accounts, scheduling, billing state, PostgreSQL, and edge TLS. Customer containers and persistent volumes run on private workers with no public IP. A worker is added when its advertised reservations no longer fit another application. Individual applications keep worker affinity for lifecycle and restore operations, while larger customer workspaces may span several workers behind the same edge gateway.
 
 `worker_count` is deliberately explicit in Terraform. The scheduler will refuse an install that does not fit, rather than overcommit a node. Automated instance creation and removal remains locked until drain, restore, quota, cost, and failed-payment reconciliation have production proofs.
 

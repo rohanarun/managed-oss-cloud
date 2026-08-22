@@ -3,7 +3,7 @@ import type { ApplicationInstance } from "../src/shared/types";
 import { buildRuntimeManifest } from "../src/server/app-manifests";
 
 function instance(appId: string): ApplicationInstance {
-  return { id: "11111111-2222-3333-4444-555555555555", installationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", appId, state: "queued", hostname: `${appId}.apps.example.com`, containerProject: `mos-${appId}`, customDomains: [], memoryReservationMb: 384, cpuReservationMillis: 250, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() };
+  return { id: "11111111-2222-3333-4444-555555555555", installationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", appId, state: "queued", hostname: `${appId}.apps.example.com`, containerProject: `mos-${appId}`, customDomains: [], memoryReservationMb: 384, cpuReservationMillis: 250, storageReservationGb: 3, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() };
 }
 
 describe("verified application manifests", () => {

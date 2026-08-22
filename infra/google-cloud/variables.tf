@@ -51,7 +51,11 @@ variable "worker_machine_type" {
 variable "worker_disk_size_gb" {
   description = "Persistent boot disk size for each stateful application worker."
   type        = number
-  default     = 40
+  default     = 200
+  validation {
+    condition     = var.worker_disk_size_gb >= 40
+    error_message = "A stateful application worker needs at least 40 GB of persistent disk."
+  }
 }
 
 variable "worker_capacity_memory_mb" {
@@ -64,6 +68,12 @@ variable "worker_capacity_cpu_millis" {
   description = "Schedulable CPU advertised by each worker."
   type        = number
   default     = 1800
+}
+
+variable "worker_capacity_storage_gb" {
+  description = "Schedulable persistent storage advertised by each worker. Keep below the boot disk size."
+  type        = number
+  default     = 180
 }
 
 variable "worker_system_reserve_memory_mb" {

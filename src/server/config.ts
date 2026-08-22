@@ -12,7 +12,7 @@ const environmentSchema = z.object({
   BILLING_MODE: z.enum(["disabled", "live"]).default("disabled"),
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
   PLAN_CATALOG_JSON: z.string().default(
-    '{"micro":{"label":"Micro","memoryMb":1024,"cpu":0.25,"monthlyCents":0},"small":{"label":"Small","memoryMb":2048,"cpu":0.5,"monthlyCents":0},"medium":{"label":"Medium","memoryMb":4096,"cpu":1,"monthlyCents":0}}',
+    '{"starter":{"label":"Starter","memoryMb":1536,"cpu":0.5,"storageGb":10,"maxServices":2,"infrastructureMonthlyCents":500,"monthlyCents":700},"scale":{"label":"Scale","memoryMb":6144,"cpu":2,"storageGb":100,"maxServices":12,"infrastructureMonthlyCents":4464,"monthlyCents":5000},"fleet":{"label":"Fleet","memoryMb":24576,"cpu":8,"storageGb":500,"maxServices":50,"infrastructureMonthlyCents":17857,"monthlyCents":20000}}',
   ),
   PLATFORM_FEE_PERCENT: z.coerce.number().min(0).max(100).default(12),
   PLATFORM_FEE_MIN_CENTS: z.coerce.number().int().min(0).default(200),
@@ -36,6 +36,7 @@ const environmentSchema = z.object({
   WORKER_MACHINE_TYPE: z.string().min(2).optional(),
   WORKER_CAPACITY_MEMORY_MB: z.coerce.number().int().min(1024).optional(),
   WORKER_CAPACITY_CPU_MILLIS: z.coerce.number().int().min(250).optional(),
+  WORKER_CAPACITY_STORAGE_GB: z.coerce.number().int().min(10).optional(),
   WORKER_SYSTEM_RESERVE_MEMORY_MB: z.coerce.number().int().min(256).default(768),
   WORKER_AGENT_TOKEN_FILE: z.string().default("/opt/managed-oss/agent/token"),
   CONTROL_PLANE_AGENT_URL: z.string().url().optional(),
@@ -50,7 +51,7 @@ const environmentSchema = z.object({
 const raw = environmentSchema.parse(process.env);
 const planRecord = z.record(
   z.string(),
-  z.object({ label: z.string(), memoryMb: z.number().positive(), cpu: z.number().positive(), monthlyCents: z.number().int().min(0) }),
+  z.object({ label: z.string(), memoryMb: z.number().positive(), cpu: z.number().positive(), storageGb: z.number().int().positive().default(10), maxServices: z.number().int().positive().default(2), infrastructureMonthlyCents: z.number().int().min(0).default(0), monthlyCents: z.number().int().min(0) }),
 ).parse(JSON.parse(raw.PLAN_CATALOG_JSON));
 
 export const config = {

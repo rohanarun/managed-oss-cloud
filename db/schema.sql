@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS worker_nodes (
   machine_type TEXT NOT NULL,
   capacity_memory_mb INTEGER NOT NULL,
   capacity_cpu_millis INTEGER NOT NULL,
+  capacity_storage_gb INTEGER NOT NULL DEFAULT 10,
   system_reserve_memory_mb INTEGER NOT NULL,
   agent_token_hash TEXT NOT NULL UNIQUE,
   last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS worker_nodes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE installations ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
+UPDATE installations SET plan=CASE plan WHEN 'micro' THEN 'starter' WHEN 'small' THEN 'scale' WHEN 'medium' THEN 'fleet' ELSE plan END WHERE plan IN ('micro','small','medium');
 
 CREATE TABLE IF NOT EXISTS application_instances (
   id UUID PRIMARY KEY,
@@ -83,6 +85,8 @@ CREATE INDEX IF NOT EXISTS application_instances_installation_idx ON application
 ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
 ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS memory_reservation_mb INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS cpu_reservation_millis INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS storage_reservation_gb INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE application_instances DROP CONSTRAINT IF EXISTS application_instances_installation_id_app_id_key;
 CREATE INDEX IF NOT EXISTS application_instances_worker_node_idx ON application_instances(worker_node_id, state);
 
 CREATE TABLE IF NOT EXISTS custom_domains (
