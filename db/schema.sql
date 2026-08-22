@@ -43,18 +43,38 @@ CREATE TABLE IF NOT EXISTS installations (
   state TEXT NOT NULL,
   hostname TEXT NOT NULL,
   app_ids JSONB NOT NULL,
+  failure_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE installations ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 CREATE INDEX IF NOT EXISTS installations_user_id_idx ON installations(user_id);
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS installation_id UUID REFERENCES installations(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS application_instances (
+  id UUID PRIMARY KEY,
+  installation_id UUID NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+  app_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  hostname TEXT NOT NULL UNIQUE,
+  container_project TEXT NOT NULL UNIQUE,
+  last_health_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(installation_id, app_id)
+);
+CREATE INDEX IF NOT EXISTS application_instances_installation_idx ON application_instances(installation_id);
 
 CREATE TABLE IF NOT EXISTS custom_domains (
   id UUID PRIMARY KEY,
   installation_id UUID NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+  application_instance_id UUID REFERENCES application_instances(id) ON DELETE CASCADE,
   domain TEXT NOT NULL UNIQUE,
   verification_status TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE custom_domains ADD COLUMN IF NOT EXISTS application_instance_id UUID REFERENCES application_instances(id) ON DELETE CASCADE;
+ALTER TABLE custom_domains ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS billing_ledger (
   id UUID PRIMARY KEY,
@@ -74,3 +94,36 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   response JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS provisioning_jobs (
+  id UUID PRIMARY KEY,
+  installation_id UUID NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  locked_at TIMESTAMPTZ,
+  locked_by TEXT,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS provisioning_jobs_claim_idx ON provisioning_jobs(status, available_at, created_at);
+
+CREATE TABLE IF NOT EXISTS stripe_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS backups (
+  id UUID PRIMARY KEY,
+  installation_id UUID NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
+  application_instance_id UUID NOT NULL REFERENCES application_instances(id) ON DELETE CASCADE,
+  object_name TEXT NOT NULL UNIQUE,
+  size_bytes BIGINT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS backups_installation_idx ON backups(installation_id, created_at DESC);

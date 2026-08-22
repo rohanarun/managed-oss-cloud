@@ -53,8 +53,51 @@ export interface Installation {
   state: "planned" | "awaiting_payment" | "provisioning" | "live" | "failed";
   hostname: string;
   customDomains: string[];
+  applications?: ApplicationInstance[];
+  failureReason?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ApplicationInstance {
+  id: string;
+  installationId: string;
+  appId: string;
+  state: "queued" | "provisioning" | "live" | "failed" | "stopped";
+  hostname: string;
+  containerProject: string;
+  customDomains: CustomDomain[];
+  lastHealthAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomDomain {
+  id: string;
+  applicationInstanceId: string;
+  domain: string;
+  verificationStatus: "awaiting-dns" | "verified" | "active" | "failed";
+  lastCheckedAt?: string;
+}
+
+export interface ProvisioningJob {
+  id: string;
+  installationId: string;
+  action: "install" | "upgrade" | "stop" | "start" | "uninstall" | "reload-routes" | "backup" | "restore";
+  status: "queued" | "running" | "succeeded" | "failed";
+  attempts: number;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface BackupRecord {
+  id: string;
+  installationId: string;
+  applicationInstanceId: string;
+  objectName: string;
+  sizeBytes: number;
+  status: "ready" | "failed";
+  createdAt: string;
 }
 
 export interface DashboardData {

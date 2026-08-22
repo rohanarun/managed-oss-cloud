@@ -9,7 +9,9 @@ import { z } from "zod";
 import { buildQuote } from "../shared/pricing.js";
 import type { AccountUser, CatalogApp } from "../shared/types.js";
 import { createSessionToken, hashPassword, hashSessionToken, verifyPassword } from "./auth.js";
+import { createBillingService, type BillingGateway } from "./billing.js";
 import { config } from "./config.js";
+import { verifyDomain, type DomainResolver } from "./domain-verification.js";
 import { createRepository, type Repository } from "./repository.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -25,21 +27,34 @@ const domainSchema = z.object({ domain: z.string().trim().toLowerCase().regex(/^
 const upgradeSchema = z.object({ plan: z.string().min(1) });
 const signupSchema = z.object({ displayName: z.string().trim().min(2).max(60), email: z.string().trim().toLowerCase().email(), password: z.string().min(10).max(200) });
 const loginSchema = z.object({ email: z.string().trim().toLowerCase().email(), password: z.string().min(1).max(200) });
+const checkoutSchema = z.object({ installationId: z.string().uuid() });
+const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "backup", "restore"]), objectName: z.string().max(1_000).optional(), applicationInstanceId: z.string().uuid().optional() });
 
 function publicUser(user: AccountUser) {
   return { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt };
 }
 
-export async function createApp(options: { repository?: Repository } = {}) {
+export async function createApp(options: { repository?: Repository; billingGateway?: BillingGateway; domainResolver?: DomainResolver } = {}) {
   const app = express();
   const repository = options.repository ?? createRepository();
   await repository.initialize();
+  const billing = createBillingService(repository, options.billingGateway);
   const catalog = catalogSchema.parse(JSON.parse(await readFile(path.join(projectDirectory, "catalog/apps.json"), "utf8"))) as CatalogApp[];
   const policy = { plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS, systemReserveMb: 192, maximumSafeUtilization: 0.8 };
   const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });
 
   app.set("trust proxy", 1);
   app.use(helmet({ contentSecurityPolicy: false }));
+  app.post("/api/billing/webhook", express.raw({ type: "application/json", limit: "128kb" }), async (request, response) => {
+    const signature = request.get("stripe-signature");
+    if (!signature || !Buffer.isBuffer(request.body)) return response.status(400).json({ error: "A signed Stripe payload is required." });
+    try {
+      const result = await billing.webhook(request.body, signature);
+      return response.json(result);
+    } catch (error) {
+      return response.status(400).json({ error: error instanceof Error ? error.message : "Stripe webhook rejected." });
+    }
+  });
   app.use(express.json({ limit: "32kb" }));
   app.use(cookieParser());
   app.use((request, response, next) => {
@@ -69,7 +84,7 @@ export async function createApp(options: { repository?: Repository } = {}) {
   }
 
   app.get("/api/health", (_request, response) => response.json({ ok: true, mode: config.PROVISIONING_MODE, persistence: repository.persistence }));
-  app.get("/api/config", (_request, response) => response.json({ productName: config.PRODUCT_NAME, provisioningMode: config.PROVISIONING_MODE, persistence: repository.persistence, billingReady: Boolean(config.STRIPE_SECRET_KEY), plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS }));
+  app.get("/api/config", (_request, response) => response.json({ productName: config.PRODUCT_NAME, provisioningMode: config.PROVISIONING_MODE, persistence: repository.persistence, billingReady: billing.ready, stripePublishableKey: billing.ready ? config.STRIPE_PUBLISHABLE_KEY : undefined, plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS }));
   app.get("/api/catalog", (_request, response) => response.json(catalog));
 
   app.post("/api/auth/signup", authLimiter, async (request, response) => {
@@ -100,7 +115,7 @@ export async function createApp(options: { repository?: Repository } = {}) {
   });
   app.get("/api/dashboard", requireUser, async (_request, response) => {
     const user = response.locals.user;
-    return response.json({ user: publicUser(user), installations: await repository.listInstallations(user.id), persistence: repository.persistence, billingReady: Boolean(config.STRIPE_SECRET_KEY), provisioningMode: config.PROVISIONING_MODE });
+    return response.json({ user: publicUser(user), installations: await repository.listInstallations(user.id), persistence: repository.persistence, billingReady: billing.ready, provisioningMode: config.PROVISIONING_MODE });
   });
 
   app.post("/api/quote", (request, response) => {
@@ -120,6 +135,7 @@ export async function createApp(options: { repository?: Repository } = {}) {
     if (!quote.recommendedPlan) return response.status(409).json({ error: "No configured server plan can safely contain this selection." });
     const slug = parsed.data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const installation = await repository.createInstallation({ userId: response.locals.user.id, appIds: parsed.data.appIds, name: parsed.data.name, plan: quote.recommendedPlan.id, state: "planned", hostname: `${slug}.${config.PUBLIC_HOST_TARGET}`, customDomains: [] });
+    installation.applications = await repository.createApplicationInstances(installation.id, installation.appIds, config.PUBLIC_HOST_TARGET);
     return response.status(201).json({ installation, quote, provisioningMode: config.PROVISIONING_MODE });
   });
   app.post("/api/installations/:id/domains", requireUser, async (request, response) => {
@@ -127,7 +143,19 @@ export async function createApp(options: { repository?: Repository } = {}) {
     if (!parsed.success) return response.status(400).json({ error: "Enter a valid domain name." });
     const installation = await repository.addDomain(response.locals.user.id, String(request.params.id), parsed.data.domain);
     if (!installation) return response.status(404).json({ error: "Server not found." });
-    return response.json({ installation, dns: { type: "CNAME", name: parsed.data.domain, value: installation.hostname, status: "awaiting-dns" } });
+    const target = installation.applications?.[0]?.hostname ?? installation.hostname;
+    return response.json({ installation, dns: { type: "CNAME", name: parsed.data.domain, value: target, status: "awaiting-dns" } });
+  });
+  app.post("/api/installations/:id/domains/:domain/verify", requireUser, async (request, response) => {
+    const parsed = domainSchema.safeParse({ domain: request.params.domain });
+    if (!parsed.success) return response.status(400).json({ error: "Enter a valid domain name." });
+    const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));
+    if (!installation || !installation.customDomains.includes(parsed.data.domain)) return response.status(404).json({ error: "Domain was not found on this server." });
+    const target = installation.applications?.[0]?.hostname ?? installation.hostname;
+    const result = await verifyDomain(parsed.data.domain, target, config.PLATFORM_IPV4, options.domainResolver);
+    await repository.setDomainStatus(parsed.data.domain, result.verified ? "verified" : "awaiting-dns");
+    if (result.verified) await repository.enqueueJob(installation.id, "reload-routes", { domain: parsed.data.domain });
+    return response.status(result.verified ? 200 : 409).json({ ...result, expected: target });
   });
   app.post("/api/installations/:id/upgrade", requireUser, async (request, response) => {
     const parsed = upgradeSchema.safeParse(request.body);
@@ -136,9 +164,37 @@ export async function createApp(options: { repository?: Repository } = {}) {
     if (!installation) return response.status(404).json({ error: "Server not found." });
     return response.json({ installation, provisioningMode: config.PROVISIONING_MODE, deployRequired: true });
   });
-  app.post("/api/billing/checkout", requireUser, (_request, response) => {
-    if (!config.STRIPE_SECRET_KEY) return response.status(503).json({ error: "Billing is not connected yet. No charge or cloud resource was created." });
-    return response.status(501).json({ error: "Checkout stays locked until webhook and price reconciliation tests pass." });
+  app.get("/api/installations/:id/backups", requireUser, async (request, response) => {
+    const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));
+    if (!installation) return response.status(404).json({ error: "Server not found." });
+    return response.json(await repository.listBackups(response.locals.user.id, installation.id));
+  });
+  app.post("/api/installations/:id/actions", requireUser, async (request, response) => {
+    if (config.PROVISIONING_MODE !== "live") return response.status(503).json({ error: "Live provisioning is still locked." });
+    const parsed = actionSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: "Choose a valid server action." });
+    const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));
+    if (!installation) return response.status(404).json({ error: "Server not found." });
+    if (parsed.data.action === "restore") {
+      if (!parsed.data.objectName || !parsed.data.applicationInstanceId) return response.status(400).json({ error: "Choose a verified backup to restore." });
+      const backups = await repository.listBackups(response.locals.user.id, installation.id);
+      if (!backups.some((item) => item.objectName === parsed.data.objectName && item.applicationInstanceId === parsed.data.applicationInstanceId)) return response.status(404).json({ error: "Backup not found." });
+    }
+    const job = await repository.enqueueJob(installation.id, parsed.data.action, { objectName: parsed.data.objectName, applicationInstanceId: parsed.data.applicationInstanceId });
+    return response.status(202).json({ job });
+  });
+  app.post("/api/billing/checkout", requireUser, async (request, response) => {
+    if (!billing.ready) return response.status(503).json({ error: "Billing is not enabled yet. No charge or cloud resource was created." });
+    const parsed = checkoutSchema.safeParse(request.body);
+    const idempotencyKey = request.get("idempotency-key");
+    if (!parsed.success || !idempotencyKey || !/^[A-Za-z0-9._:-]{16,200}$/.test(idempotencyKey)) return response.status(400).json({ error: "A server and a valid idempotency key are required." });
+    const installation = await repository.getInstallation(response.locals.user.id, parsed.data.installationId);
+    if (!installation) return response.status(404).json({ error: "Server not found." });
+    if (installation.state !== "planned") return response.status(409).json({ error: "Only an unpaid planned server can enter checkout." });
+    const selected = installation.appIds.map((id) => catalog.find((item) => item.id === id)).filter(Boolean) as CatalogApp[];
+    const quote = buildQuote(selected, policy);
+    const checkout = await billing.checkout(response.locals.user, installation, quote, idempotencyKey);
+    return response.json(checkout);
   });
 
   const staticDirectory = path.join(projectDirectory, "dist");

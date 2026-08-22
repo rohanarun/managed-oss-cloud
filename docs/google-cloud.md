@@ -30,7 +30,7 @@ terraform -chdir=infra/google-cloud apply
 
 Terraform prints the static IPv4, dashboard URL, and an SSH command. The first boot installs Docker, starts PostgreSQL, the Managed OSS Cloud control plane, and Caddy, then prepares `/opt/managed-oss` for application data, configuration, and backups. Keep `PROVISIONING_MODE=dry-run` until the live-provisioning gates in the README pass.
 
-Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions.
+Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions. Stripe and backup keys belong in Google Secret Manager; the runtime service account receives access only to the named secrets and backup bucket.
 
 ## Connect domains
 
