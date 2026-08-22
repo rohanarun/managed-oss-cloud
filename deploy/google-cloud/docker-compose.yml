@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     environment:
       CONTROL_PLANE_DOMAIN: ${CONTROL_PLANE_DOMAIN}
+      PLATFORM_IPV4: ${PLATFORM_IPV4}
     ports:
       - "80:80"
       - "443:443"
@@ -65,4 +66,3 @@ services:
       - /opt/managed-oss/config/apps.caddy:/etc/caddy/apps.caddy:ro
       - /opt/managed-oss/apps/caddy-data:/data
       - /opt/managed-oss/apps/caddy-config:/config
-

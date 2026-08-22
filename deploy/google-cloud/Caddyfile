@@ -3,4 +3,9 @@
   reverse_proxy control-plane:8787
 }
 
+http://{$PLATFORM_IPV4} {
+  encode zstd gzip
+  reverse_proxy control-plane:8787
+}
+
 import /etc/caddy/apps.caddy
