@@ -32,7 +32,7 @@ Terraform prints the static IPv4, dashboard URL, and an SSH command. The first b
 
 Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions. Stripe and backup keys belong in Google Secret Manager; the runtime service account receives access only to the named secrets and backup bucket.
 
-The checked-in `deploy/google-cloud` Compose and Caddy files are the production runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep `billing.env`, `worker.env`, and `runtime.env` mode `0600`; they are host-created secret files and must never be committed. When billing is disabled, the VM should have neither a Stripe secret value nor permission to read that secret.
+The checked-in `deploy/google-cloud` Compose and Caddy files are the production runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep `billing.env`, `worker.env`, `postgres.env`, and `runtime.env` mode `0600`; they are host-created secret files and must never be committed. PostgreSQL reads only `postgres.env`, so control-plane configuration changes do not restart or broaden the environment of the database. When billing is disabled, the VM should have neither a Stripe secret value nor permission to read that secret.
 
 The backup bucket should enforce public-access prevention and uniform bucket-level access. Grant the runtime identity `roles/storage.objectCreator` plus `roles/storage.objectViewer`; it can create and restore encrypted backup objects but cannot delete them.
 

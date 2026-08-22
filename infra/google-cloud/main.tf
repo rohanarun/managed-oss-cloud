@@ -139,6 +139,10 @@ resource "google_compute_instance" "managed_oss" {
     POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
     EOF
     fi
+    POSTGRES_PASSWORD="$(sed -n 's/^POSTGRES_PASSWORD=//p' /opt/managed-oss/config/runtime.env)"
+    cat > /opt/managed-oss/config/postgres.env <<EOF
+    POSTGRES_PASSWORD=$${POSTGRES_PASSWORD}
+    EOF
     access_secret() {
       local secret_name="$1"
       local access_token
@@ -165,7 +169,7 @@ resource "google_compute_instance" "managed_oss" {
       database:
         image: postgres:17-alpine
         restart: unless-stopped
-        env_file: runtime.env
+        env_file: postgres.env
         environment:
           POSTGRES_DB: opendock
           POSTGRES_USER: opendock
