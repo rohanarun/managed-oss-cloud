@@ -51,11 +51,11 @@ describe("account and server boundaries", () => {
     expect(attempted.status).toBe(404);
   });
 
-  it("fails closed for integrations and billing", async () => {
+  it("fails closed for unsupported applications and disabled billing", async () => {
     const app = await application();
     const agent = request.agent(app);
     await agent.post("/api/auth/signup").send({ displayName: "Safe Owner", email: "safe@example.com", password: "long-safe-password" });
-    expect((await agent.post("/api/installations").send({ name: "Unverified", appIds: ["documenso"] })).status).toBe(409);
+    expect((await agent.post("/api/installations").send({ name: "Unsupported", appIds: ["not-in-the-catalog"] })).status).toBe(400);
     expect((await agent.post("/api/billing/checkout").send({ installationId: "anything" })).status).toBe(503);
   });
 });
