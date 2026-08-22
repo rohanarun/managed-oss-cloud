@@ -8,6 +8,17 @@ export interface PricingPolicy {
   maximumSafeUtilization: number;
 }
 
+function platformFeeFor(plan: ComputePlan, policy: PricingPolicy) {
+  return Math.max(Math.ceil(plan.infrastructureMonthlyCents * (policy.platformFeePercent / 100)), policy.platformFeeMinimumCents);
+}
+
+function planCanContain(quote: Pick<Quote, "requestedMemoryMb" | "requestedCpuMillis" | "requestedStorageGb" | "selectedApps">, plan: ComputePlan, policy: PricingPolicy) {
+  return quote.requestedMemoryMb <= plan.memoryMb * policy.maximumSafeUtilization
+    && quote.requestedCpuMillis <= plan.cpu * 1_000
+    && quote.requestedStorageGb <= plan.storageGb
+    && quote.selectedApps.length <= plan.maxServices;
+}
+
 export function buildQuote(apps: CatalogApp[], policy: PricingPolicy): Quote {
   const appMemory = apps.reduce((total, app) => total + app.memoryBudgetMb, 0);
   const requestedCpuMillis = apps.reduce((total, app) => total + app.cpuBudgetMillis, 0);
@@ -17,13 +28,10 @@ export function buildQuote(apps: CatalogApp[], policy: PricingPolicy): Quote {
   const recommendedPlan = policy.plans
     .slice()
     .sort((a, b) => a.memoryMb - b.memoryMb)
-    .find((plan) => requestedMemoryMb <= plan.memoryMb * policy.maximumSafeUtilization && requestedCpuMillis <= plan.cpu * 1_000 && requestedStorageGb <= plan.storageGb && apps.length <= plan.maxServices) ?? null;
+    .find((plan) => planCanContain({ requestedMemoryMb, requestedCpuMillis, requestedStorageGb, selectedApps: apps }, plan, policy)) ?? null;
   const requiresSplit = !compatibleWithBundle || recommendedPlan === null;
   const infrastructureMonthlyCents = recommendedPlan?.infrastructureMonthlyCents ?? 0;
-  const percentageFee = Math.ceil(infrastructureMonthlyCents * (policy.platformFeePercent / 100));
-  const platformFeeCents = recommendedPlan
-    ? Math.max(percentageFee, policy.platformFeeMinimumCents)
-    : 0;
+  const platformFeeCents = recommendedPlan ? platformFeeFor(recommendedPlan, policy) : 0;
 
   return {
     selectedApps: apps,
@@ -35,10 +43,24 @@ export function buildQuote(apps: CatalogApp[], policy: PricingPolicy): Quote {
     recommendedPlan,
     infrastructureMonthlyCents,
     platformFeeCents,
-    totalMonthlyCents: recommendedPlan?.monthlyCents ?? 0,
+    totalMonthlyCents: infrastructureMonthlyCents + platformFeeCents,
     requiresSplit,
     explanation: requiresSplit
       ? "This selection includes an isolated workload. It will be separated instead of overloading the shared server."
       : `All selected applications fit the ${recommendedPlan?.label ?? "configured"} server with a safety reserve.`,
+  };
+}
+
+export function buildQuoteForPlan(apps: CatalogApp[], plan: ComputePlan, policy: PricingPolicy): Quote | null {
+  const quote = buildQuote(apps, policy);
+  if (!planCanContain(quote, plan, policy)) return null;
+  const platformFeeCents = platformFeeFor(plan, policy);
+  return {
+    ...quote,
+    recommendedPlan: plan,
+    infrastructureMonthlyCents: plan.infrastructureMonthlyCents,
+    platformFeeCents,
+    totalMonthlyCents: plan.infrastructureMonthlyCents + platformFeeCents,
+    explanation: `The selected applications fit the chosen ${plan.label} allocation with its configured safety reserve.`,
   };
 }

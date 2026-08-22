@@ -7,7 +7,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { z } from "zod";
-import { buildQuote } from "../shared/pricing.js";
+import { buildQuote, buildQuoteForPlan } from "../shared/pricing.js";
 import type { AccountUser, CatalogApp } from "../shared/types.js";
 import { createSessionToken, hashPassword, hashSessionToken, verifyPassword } from "./auth.js";
 import { createBillingService, type BillingGateway } from "./billing.js";
@@ -283,7 +283,9 @@ export async function createApp(options: { repository?: Repository; billingGatew
     if (!installation) return response.status(404).json({ error: "Server not found." });
     if (installation.state !== "planned") return response.status(409).json({ error: "Only an unpaid planned server can enter checkout." });
     const selected = installation.appIds.map((id) => catalog.find((item) => item.id === id)).filter(Boolean) as CatalogApp[];
-    const quote = buildQuote(selected, policy);
+    const chosenPlan = config.plans.find((plan) => plan.id === installation.plan);
+    const quote = chosenPlan ? buildQuoteForPlan(selected, chosenPlan, policy) : null;
+    if (!quote) return response.status(409).json({ error: "The selected server plan no longer safely contains these applications." });
     const checkout = await billing.checkout(response.locals.user, installation, quote, idempotencyKey);
     return response.json(checkout);
   });

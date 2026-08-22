@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQuote } from "../src/shared/pricing";
+import { buildQuote, buildQuoteForPlan } from "../src/shared/pricing";
 import type { CatalogApp } from "../src/shared/types";
 
 const lightApp: CatalogApp = { id: "one", name: "One", replaces: "A", category: "Test", license: "MIT", sourceUrl: "https://example.com", description: "Test", version: "1.0.0", memoryBudgetMb: 128, cpuBudgetMillis: 100, storageBudgetGb: 1, bundleEligible: true, status: "ready", requirements: [], deploymentNote: "Test" };
@@ -30,6 +30,20 @@ describe("buildQuote", () => {
       { id: "fleet", label: "Fleet", memoryMb: 24576, cpu: 8, storageGb: 500, maxServices: 50, infrastructureMonthlyCents: 17857, monthlyCents: 20000 },
     ];
     expect(tiers.map((plan) => plan.infrastructureMonthlyCents + Math.max(Math.ceil(plan.infrastructureMonthlyCents * .12), 200))).toEqual(tiers.map((plan) => plan.monthlyCents));
+  });
+
+  it("prices the customer's chosen larger allocation instead of the smallest recommendation", () => {
+    const chosen = policy.plans[1];
+    const quote = buildQuoteForPlan([lightApp], chosen, policy);
+    expect(buildQuote([lightApp], policy).recommendedPlan?.id).toBe("starter");
+    expect(quote?.recommendedPlan?.id).toBe("standard");
+    expect(quote?.infrastructureMonthlyCents).toBe(2232);
+    expect(quote?.platformFeeCents).toBe(268);
+    expect(quote?.totalMonthlyCents).toBe(2500);
+  });
+
+  it("refuses a chosen allocation that cannot safely contain the selected applications", () => {
+    expect(buildQuoteForPlan([heavyApp], policy.plans[0], policy)).toBeNull();
   });
 
   it("moves a heavy or incompatible application to an isolated service", () => {

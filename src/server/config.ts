@@ -54,6 +54,11 @@ const planRecord = z.record(
   z.object({ label: z.string(), memoryMb: z.number().positive(), cpu: z.number().positive(), storageGb: z.number().int().positive().default(10), maxServices: z.number().int().positive().default(2), infrastructureMonthlyCents: z.number().int().min(0).default(0), monthlyCents: z.number().int().min(0) }),
 ).parse(JSON.parse(raw.PLAN_CATALOG_JSON));
 
+for (const plan of Object.values(planRecord)) {
+  const platformFeeCents = Math.max(Math.ceil(plan.infrastructureMonthlyCents * (raw.PLATFORM_FEE_PERCENT / 100)), raw.PLATFORM_FEE_MIN_CENTS);
+  if (plan.monthlyCents !== plan.infrastructureMonthlyCents + platformFeeCents) throw new Error(`Plan ${plan.label} monthly total does not match its infrastructure and management fee components.`);
+}
+
 export const config = {
   ...raw,
   plans: Object.entries(planRecord).map<ComputePlan>(([id, plan]) => ({ id, ...plan })),
