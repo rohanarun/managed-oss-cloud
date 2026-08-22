@@ -234,6 +234,7 @@ async function restore(job: AgentJob, agent: AgentClient) {
     } else if (instance.appId === "heyform") {
       await docker(["compose", "-f", composePath, "up", "-d", "--wait", "mongo"]);
       await docker(["cp", path.join(directory, ".managed-backup/database.dump"), `${instance.containerProject}-mongo:/tmp/database.dump`]);
+      await docker(["exec", "-u", "0", `${instance.containerProject}-mongo`, "chmod", "0444", "/tmp/database.dump"]);
       await docker(["exec", `${instance.containerProject}-mongo`, "mongorestore", "--archive=/tmp/database.dump", "--drop", "--nsInclude=heyform.*"]);
     }
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
