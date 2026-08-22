@@ -35,10 +35,17 @@ resource "google_secret_manager_secret_iam_member" "backup_key" {
   depends_on = [google_project_service.secret_manager]
 }
 
-resource "google_storage_bucket_iam_member" "backup_writer" {
+resource "google_storage_bucket_iam_member" "backup_creator" {
   count  = var.backup_bucket != "" ? 1 : 0
   bucket = var.backup_bucket
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+resource "google_storage_bucket_iam_member" "backup_reader" {
+  count  = var.backup_bucket != "" ? 1 : 0
+  bucket = var.backup_bucket
+  role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.runtime.email}"
 }
 

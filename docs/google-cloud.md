@@ -34,6 +34,8 @@ Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before produc
 
 The checked-in `deploy/google-cloud` Compose and Caddy files are the production runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep `billing.env`, `worker.env`, and `runtime.env` mode `0600`; they are host-created secret files and must never be committed.
 
+The backup bucket should enforce public-access prevention and uniform bucket-level access. Grant the runtime identity `roles/storage.objectCreator` plus `roles/storage.objectViewer`; it can create and restore encrypted backup objects but cannot delete them.
+
 ## Connect domains
 
 Create an `A` record for each application hostname using the printed IPv4:
