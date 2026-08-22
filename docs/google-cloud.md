@@ -32,6 +32,8 @@ Terraform prints the static IPv4, dashboard URL, and an SSH command. The first b
 
 Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions. Stripe and backup keys belong in Google Secret Manager; the runtime service account receives access only to the named secrets and backup bucket.
 
+The checked-in `deploy/google-cloud` Compose and Caddy files are the production runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep `billing.env`, `worker.env`, and `runtime.env` mode `0600`; they are host-created secret files and must never be committed.
+
 ## Connect domains
 
 Create an `A` record for each application hostname using the printed IPv4:

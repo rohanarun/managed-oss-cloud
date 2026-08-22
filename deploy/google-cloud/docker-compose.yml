@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  database:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    restart: unless-stopped
+    env_file: runtime.env
+    environment:
+      POSTGRES_DB: opendock
+      POSTGRES_USER: opendock
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /opt/managed-oss/apps/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opendock -d opendock"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  control-plane:
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    env_file:
+      - runtime.env
+      - billing.env
+    environment:
+      PORT: 8787
+      DATABASE_URL: postgresql://opendock:${POSTGRES_PASSWORD}@database:5432/opendock
+      DATABASE_SSL: "false"
+    expose:
+      - "8787"
+
+  provisioning-worker:
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+    env_file:
+      - runtime.env
+      - worker.env
+    environment:
+      DATABASE_URL: postgresql://opendock:${POSTGRES_PASSWORD}@database:5432/opendock
+      DATABASE_SSL: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/managed-oss/apps:/opt/managed-oss/apps
+      - /opt/managed-oss/config:/opt/managed-oss/config
+    profiles: ["worker"]
+
+  caddy:
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    environment:
+      CONTROL_PLANE_DOMAIN: ${CONTROL_PLANE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/managed-oss/config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/managed-oss/config/apps.caddy:/etc/caddy/apps.caddy:ro
+      - /opt/managed-oss/apps/caddy-data:/data
+      - /opt/managed-oss/apps/caddy-config:/config
+

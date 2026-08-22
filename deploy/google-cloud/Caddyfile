@@ -1,0 +1,6 @@
+{$CONTROL_PLANE_DOMAIN} {
+  encode zstd gzip
+  reverse_proxy control-plane:8787
+}
+
+import /etc/caddy/apps.caddy
