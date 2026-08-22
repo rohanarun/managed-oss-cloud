@@ -14,6 +14,14 @@ async function installation(repository: MemoryRepository, userId: string, name: 
 }
 
 describe("tenant worker pool", () => {
+  it("keeps authenticated workers idle without crash-looping while leasing is locked", async () => {
+    const repository = new MemoryRepository();
+    const app = await createApp({ repository, workerBootstrapToken: bootstrapToken, gatewayReconcilerToken: gatewayToken, agentJobsEnabled: false });
+    const registration = await request(app).post("/api/agent/register").set("authorization", `Bearer ${bootstrapToken}`).send({ id: "idle-worker", name: "Idle Worker", privateAddress: "10.70.0.9", machineType: "e2-standard-2", capacityMemoryMb: 7168, capacityCpuMillis: 1800, capacityStorageGb: 180, systemReserveMemoryMb: 768 });
+    expect(registration.status).toBe(201);
+    expect((await request(app).post("/api/agent/jobs/claim").set("authorization", `Bearer ${registration.body.agentToken}`).send({})).status).toBe(204);
+  });
+
   it("authenticates nodes, places by capacity, preserves node affinity, and emits private routes", async () => {
     const repository = new MemoryRepository();
     const app = await createApp({ repository, workerBootstrapToken: bootstrapToken, gatewayReconcilerToken: gatewayToken, agentJobsEnabled: true });

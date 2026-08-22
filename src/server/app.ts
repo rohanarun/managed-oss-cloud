@@ -124,7 +124,7 @@ export async function createApp(options: { repository?: Repository; billingGatew
     return node ? response.json({ node }) : response.status(404).json({ error: "Worker node no longer exists." });
   });
   app.post("/api/agent/jobs/claim", requireAgent, async (_request, response) => {
-    if (!agentJobsEnabled) return response.status(503).json({ error: "Worker job leasing is locked." });
+    if (!agentJobsEnabled) return response.status(204).send();
     const job = await repository.claimWorkerJob(response.locals.workerNode.id);
     return job ? response.json({ job }) : response.status(204).send();
   });
