@@ -12,10 +12,11 @@ Managed OSS Cloud is an MIT-licensed control plane for running open-source busin
 - Account-isolated dashboard for catalogue selection, server capacity, custom-domain CNAME instructions, and upgrade planning.
 - Configurable machine prices and a separately itemized percentage/minimum management fee.
 - Capacity checks that retain a memory safety reserve and split incompatible workloads.
-- Terraform for an IAP-protected Google Compute Engine host.
+- Terraform for an IAP-protected control plane and a horizontally scalable pool of private Google Compute Engine workers.
 - Transactional Stripe checkout and signed, replay-safe webhook handling that queues provisioning only after payment.
-- A PostgreSQL-backed Docker worker for install, start, stop, update, routing, encrypted backup, and restore jobs.
-- DNS verification, CNAME targets, dynamic Caddy routes, and automatic TLS after ownership resolves.
+- Authenticated remote Docker agents for install, start, stop, update, routing, encrypted backup, and restore jobs. Workers never receive PostgreSQL or Stripe credentials.
+- Capacity-aware placement, tenant-to-worker affinity, renewable job leases, and per-worker CPU/memory reservations.
+- DNS verification, CNAME targets, a central dynamic Caddy gateway, private worker ingress, and automatic TLS after ownership resolves.
 - Dry-run safety: checkout and provider mutations fail closed independently until their production gates pass.
 
 The managed service uses PostgreSQL. Local development without `DATABASE_URL` deliberately uses temporary in-memory accounts.
@@ -57,9 +58,8 @@ STRIPE_PUBLISHABLE_KEY=          # browser-visible publishable key
 STRIPE_SECRET_KEY=               # load from Secret Manager, never Git
 STRIPE_WEBHOOK_SECRET=           # load from Secret Manager, never Git
 BILLING_MODE=disabled            # switch independently after live webhook proof
-PROVISIONING_WORKER=disabled     # switch independently after worker proof
-BACKUP_BUCKET=                   # private GCS bucket
-BACKUP_KEY_HEX=                  # 32-byte key from Secret Manager
+WORKER_BOOTSTRAP_TOKEN=          # Secret Manager value used only for agent enrolment
+GATEWAY_RECONCILER_TOKEN=        # Secret Manager value used only for route discovery
 ```
 
 Machine prices are configuration, not application constants. Set them from the current provider quote for the selected project and region.
@@ -72,7 +72,13 @@ npm run typecheck
 npm run build
 ```
 
-The tests cover price/capacity policy, provider requests, secure account flows, cross-account isolation, domain changes, upgrade planning, and fail-closed billing.
+The tests cover price/capacity policy, secure account flows, cross-account isolation, domain changes, fail-closed billing, authenticated node enrolment, capacity-aware placement, tenant affinity, and private gateway routes.
+
+## Scale model
+
+The public `e2-medium` is the control plane, not the place customer tools run. It owns accounts, scheduling, billing state, PostgreSQL, and edge TLS. Customer containers and persistent volumes run on private workers with no public IP. A worker is added when its advertised reservations no longer fit another installation; existing tenants remain pinned to their worker for lifecycle and restore operations.
+
+`worker_count` is deliberately explicit in Terraform. The scheduler will refuse an install that does not fit, rather than overcommit a node. Automated instance creation and removal remains locked until drain, restore, quota, cost, and failed-payment reconciliation have production proofs.
 
 ## Remaining live-provisioning gates
 
@@ -81,7 +87,7 @@ The current release is a safe control-plane MVP, not a production hosting market
 1. Publish and digest-pin every application image and its dependencies.
 2. Pass install, health, upgrade, rollback, encrypted backup, and restore tests per application.
 3. Complete destructive lifecycle and failed-payment/cancellation reconciliation tests.
-4. Prove tenant isolation, resource limits, secret rotation, outbound-email abuse controls, and incident recovery.
+4. Prove tenant isolation, worker drain/migration, resource limits, secret rotation, outbound-email abuse controls, and incident recovery.
 5. Confirm the exact Google Cloud account, project, region, quota, and recurring price before creating customer resources.
 
 ## License

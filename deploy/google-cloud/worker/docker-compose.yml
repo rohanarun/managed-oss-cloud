@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  agent:
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    command: ["npm", "run", "worker"]
+    env_file: worker.env
+    environment:
+      PROVISIONING_WORKER: remote
+      HOST_APPS_ROOT: /opt/managed-oss/apps/workspaces
+      HOST_CADDY_CONFIG: /opt/managed-oss/config/apps.caddy
+      PLATFORM_DOCKER_NETWORK: managed-oss-worker-platform
+      PLATFORM_CADDY_CONTAINER: managed-oss-worker-caddy
+      WORKER_AGENT_TOKEN_FILE: /opt/managed-oss/agent/token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/managed-oss/apps:/opt/managed-oss/apps
+      - /opt/managed-oss/config:/opt/managed-oss/config
+      - /opt/managed-oss/agent:/opt/managed-oss/agent
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    container_name: managed-oss-worker-caddy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - platform
+    volumes:
+      - /opt/managed-oss/config/worker-Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/managed-oss/config/apps.caddy:/etc/caddy/apps.caddy:ro
+      - /opt/managed-oss/apps/caddy-data:/data
+      - /opt/managed-oss/apps/caddy-config:/config
+
+networks:
+  platform:
+    external: true
+    name: managed-oss-worker-platform

@@ -7,7 +7,7 @@ async function fixture() {
   const repository = new MemoryRepository();
   const user = await repository.createUser({ email: "billing@example.com", displayName: "Billing Owner", passwordHash: "unused" });
   const installation = await repository.createInstallation({ userId: user.id, appIds: ["uptime-kuma"], name: "Status", plan: "micro", state: "planned", hostname: "status.apps.example.com", customDomains: [] });
-  await repository.createApplicationInstances(installation.id, installation.appIds, "apps.example.com");
+  await repository.createApplicationInstances(installation.id, [{ appId: "uptime-kuma", memoryReservationMb: 384, cpuReservationMillis: 250 }], "apps.example.com");
   const quote: Quote = { selectedApps: [], requestedMemoryMb: 448, reservedMemoryMb: 192, compatibleWithBundle: true, recommendedPlan: { id: "micro", label: "Micro", memoryMb: 1024, cpu: .25, monthlyCents: 410 }, infrastructureMonthlyCents: 410, platformFeeCents: 200, totalMonthlyCents: 610, requiresSplit: false, explanation: "fits" };
   return { repository, user, installation, quote };
 }

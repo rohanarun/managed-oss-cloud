@@ -1,12 +1,10 @@
 # Self-host on Google Cloud
 
-This path creates a dedicated Google Compute Engine VM in your own project. The hosted control plane never receives the project's billing credentials.
+This path creates a dedicated control-plane VM plus an optional pool of private application workers. The same architecture powers the hosted service; a self-hosting customer keeps the Google Cloud project and billing authority.
 
 ## Cost boundary
 
-Eligible Google Cloud billing accounts receive a monthly allowance equal to one non-preemptible `e2-micro` in `us-west1`, `us-central1`, or `us-east1`, 30 GB-months of standard persistent disk, and 1 GB of outbound traffic. The allowance is shared across the billing account; it is not repeated for every project or customer.
-
-The included Terraform configuration reserves an external IPv4 so custom-domain DNS remains stable. Google bills an in-use IPv4 separately. Additional traffic, snapshots, larger disks, and larger machine types also cost extra.
+The control plane and every worker are separate billable resources. The included Terraform reserves one external IPv4 for stable customer DNS; workers use private IPs and shared Cloud NAT for outbound image pulls and updates. Persistent disks, traffic, NAT, backups, and each worker VM are additional costs. Do not price the hosted product as if one free-tier micro VM can serve hundreds of customer applications.
 
 ## Prerequisites
 
@@ -28,41 +26,38 @@ terraform -chdir=infra/google-cloud plan
 terraform -chdir=infra/google-cloud apply
 ```
 
-Terraform prints the static IPv4, dashboard URL, and an SSH command. The first boot installs Docker, starts PostgreSQL, the Managed OSS Cloud control plane, and Caddy, then prepares `/opt/managed-oss` for application data, configuration, and backups. Keep `PROVISIONING_MODE=dry-run` until the live-provisioning gates in the README pass.
+Terraform prints the static IPv4, dashboard URL, control-plane SSH command, private worker addresses, and the configured capacity envelope. The control plane runs PostgreSQL, the API, and the edge Caddy gateway. Each worker runs only its authenticated agent, a private Caddy listener, and assigned tenant containers. Keep `PROVISIONING_MODE=dry-run`, `BILLING_MODE=disabled`, and `worker_count=0` until the live-provisioning gates in the README pass.
 
 Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions. Stripe and backup keys belong in Google Secret Manager; the runtime service account receives access only to the named secrets and backup bucket.
 
-The checked-in `deploy/google-cloud` Compose and Caddy files are the production runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep `billing.env`, `worker.env`, `postgres.env`, and `runtime.env` mode `0600`; they are host-created secret files and must never be committed. PostgreSQL reads only `postgres.env`, so control-plane configuration changes do not restart or broaden the environment of the database. When billing is disabled, the VM should have neither a Stripe secret value nor permission to read that secret.
+The checked-in `deploy/google-cloud` and `deploy/google-cloud/worker` files are the two runtime templates. `CONTROL_PLANE_IMAGE` must contain an immutable GHCR digest. Keep all generated environment and agent-token files mode `0600`; they must never be committed. PostgreSQL reads only `postgres.env`. Workers never receive the database URL, Stripe secrets, session secrets, or gateway token.
 
-The backup bucket should enforce public-access prevention and uniform bucket-level access. Grant the runtime identity `roles/storage.objectCreator` plus `roles/storage.objectViewer`; it can create and restore encrypted backup objects but cannot delete them.
+The backup bucket should enforce public-access prevention and uniform bucket-level access. Terraform gives each worker object create/view access only beneath that worker's object prefix. Backups are encrypted before upload, and workers receive no delete permission.
 
 ## Connect domains
 
-Create an `A` record for each application hostname using the printed IPv4:
+Point the hosted wildcard to the printed edge IPv4, then let customers CNAME their domains to the application hostname shown in the dashboard:
 
 ```text
-calendar.example.com  A  203.0.113.10
-forms.example.com     A  203.0.113.10
-sign.example.com      A  203.0.113.10
+*.apps.example.com       A      203.0.113.10
+calendar.customer.com    CNAME  cal-abcd.apps.example.com
 ```
 
-The reverse proxy will route each hostname to its application and request a TLS certificate after DNS resolves.
+The edge gateway verifies the custom domain, obtains TLS, and proxies over the private subnet to the assigned worker. Workers are never direct DNS targets.
 
 ## Capacity
 
-The catalogue is not licence-limited. Running capacity is finite:
+The catalogue is not licence-limited. Running capacity is finite. The default `e2-medium` is only the control plane. Default application workers are `e2-standard-2` nodes advertising 7,168 MB and 1,800 CPU-millis after an explicit system reserve. Verified app reservations are enforced before placement. When no worker fits, the install remains queued and capacity must be added; the scheduler does not silently overload an existing tenant node.
 
-- `e2-micro`: 1 GB RAM and 0.25 sustained vCPU;
-- `e2-small`: 2 GB RAM and 0.5 sustained vCPU;
-- `e2-medium`: 4 GB RAM and 1 sustained vCPU.
-
-The control plane must stop an install before its combined application budgets exceed the configured safety threshold. Upgrade the machine type or move a heavy application to a second VM when necessary.
+Hundreds of customers therefore means a fleet, not one larger VM. The exact node count depends on the mix of applications, active usage, storage, and outbound email/traffic. Increase `worker_count` in a reviewed Terraform plan, or use the same worker registration API from a separately governed autoscaler after drain and cost controls are proven.
 
 ## Security boundary
 
-- Only ports 80 and 443 are opened publicly.
+- Only control-plane ports 80 and 443 are opened publicly.
+- Workers have no public IP; port 8080 accepts traffic only from instances tagged as the managed gateway.
 - SSH uses Google OS Login through Identity-Aware Proxy. Port 22 accepts traffic only from Google's IAP TCP-forwarding range.
-- Applications run in separate containers, networks, and volumes.
+- Applications run in tenant-specific containers, networks, and volumes on a capacity-selected worker.
+- Worker agents use renewable job leases and API-scoped credentials instead of direct database access.
 - Secrets must not be committed to the repository or placed in Terraform state.
 - Backups must be encrypted and copied outside the VM before production use.
 

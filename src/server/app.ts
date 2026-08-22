@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import { createSessionToken, hashPassword, hashSessionToken, verifyPassword } fr
 import { createBillingService, type BillingGateway } from "./billing.js";
 import { config } from "./config.js";
 import { verifyDomain, type DomainResolver } from "./domain-verification.js";
+import { runtimeReservation } from "./app-manifests.js";
 import { createRepository, type Repository } from "./repository.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -29,16 +31,30 @@ const signupSchema = z.object({ displayName: z.string().trim().min(2).max(60), e
 const loginSchema = z.object({ email: z.string().trim().toLowerCase().email(), password: z.string().min(1).max(200) });
 const checkoutSchema = z.object({ installationId: z.string().uuid() });
 const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "backup", "restore"]), objectName: z.string().max(1_000).optional(), applicationInstanceId: z.string().uuid().optional() });
+const workerRegistrationSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/), name: z.string().min(3).max(100), privateAddress: z.ipv4(), machineType: z.string().min(2).max(100), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), systemReserveMemoryMb: z.number().int().min(256) });
+const workerHeartbeatSchema = z.object({ privateAddress: z.ipv4(), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250) });
+const workerReportSchema = z.object({ status: z.enum(["succeeded", "failed"]), error: z.string().max(1_000).optional(), applications: z.array(z.object({ id: z.string().uuid(), state: z.enum(["queued", "provisioning", "live", "failed", "stopped"]), healthy: z.boolean().optional() })).max(12).optional(), backups: z.array(z.object({ applicationInstanceId: z.string().uuid(), objectName: z.string().min(1).max(1_000), sizeBytes: z.number().int().nonnegative() })).max(12).optional() });
+
+function bearerToken(request: Request) { const authorization = request.get("authorization") ?? ""; return authorization.startsWith("Bearer ") ? authorization.slice(7) : undefined; }
+function tokenMatches(actual: string | undefined, expected: string | undefined) {
+  if (!actual || !expected) return false;
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
 
 function publicUser(user: AccountUser) {
   return { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt };
 }
 
-export async function createApp(options: { repository?: Repository; billingGateway?: BillingGateway; domainResolver?: DomainResolver } = {}) {
+export async function createApp(options: { repository?: Repository; billingGateway?: BillingGateway; domainResolver?: DomainResolver; workerBootstrapToken?: string; gatewayReconcilerToken?: string; agentJobsEnabled?: boolean } = {}) {
   const app = express();
   const repository = options.repository ?? createRepository();
   await repository.initialize();
   const billing = createBillingService(repository, options.billingGateway);
+  const workerBootstrapToken = options.workerBootstrapToken ?? config.WORKER_BOOTSTRAP_TOKEN;
+  const gatewayReconcilerToken = options.gatewayReconcilerToken ?? config.GATEWAY_RECONCILER_TOKEN;
+  const agentJobsEnabled = options.agentJobsEnabled ?? config.PROVISIONING_MODE === "live";
   const catalog = catalogSchema.parse(JSON.parse(await readFile(path.join(projectDirectory, "catalog/apps.json"), "utf8"))) as CatalogApp[];
   const policy = { plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS, systemReserveMb: 192, maximumSafeUtilization: 0.8 };
   const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });
@@ -86,6 +102,42 @@ export async function createApp(options: { repository?: Repository; billingGatew
   app.get("/api/health", (_request, response) => response.json({ ok: true, mode: config.PROVISIONING_MODE, persistence: repository.persistence }));
   app.get("/api/config", (_request, response) => response.json({ productName: config.PRODUCT_NAME, provisioningMode: config.PROVISIONING_MODE, persistence: repository.persistence, billingReady: billing.ready, stripePublishableKey: billing.ready ? config.STRIPE_PUBLISHABLE_KEY : undefined, plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS }));
   app.get("/api/catalog", (_request, response) => response.json(catalog));
+
+  app.post("/api/agent/register", async (request, response) => {
+    if (!tokenMatches(bearerToken(request), workerBootstrapToken)) return response.status(401).json({ error: "Worker bootstrap authorization failed." });
+    const parsed = workerRegistrationSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: "Worker registration is invalid." });
+    return response.status(201).json(await repository.registerWorkerNode(parsed.data));
+  });
+  async function requireAgent(request: Request, response: Response, next: NextFunction) {
+    const token = bearerToken(request);
+    const node = token ? await repository.findWorkerNodeByAgentToken(token) : undefined;
+    if (!node) return response.status(401).json({ error: "Worker authorization failed." });
+    response.locals.workerNode = node;
+    next();
+  }
+  app.post("/api/agent/heartbeat", requireAgent, async (request, response) => {
+    const parsed = workerHeartbeatSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: "Worker heartbeat is invalid." });
+    const node = await repository.heartbeatWorkerNode(response.locals.workerNode.id, parsed.data);
+    return node ? response.json({ node }) : response.status(404).json({ error: "Worker node no longer exists." });
+  });
+  app.post("/api/agent/jobs/claim", requireAgent, async (_request, response) => {
+    if (!agentJobsEnabled) return response.status(503).json({ error: "Worker job leasing is locked." });
+    const job = await repository.claimWorkerJob(response.locals.workerNode.id);
+    return job ? response.json({ job }) : response.status(204).send();
+  });
+  app.post("/api/agent/jobs/:id/report", requireAgent, async (request, response) => {
+    const parsed = workerReportSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: "Worker report is invalid." });
+    const accepted = await repository.reportWorkerJob(response.locals.workerNode.id, String(request.params.id), parsed.data);
+    return accepted ? response.status(204).send() : response.status(409).json({ error: "The job lease is no longer active for this worker." });
+  });
+  app.get("/api/agent/routes", requireAgent, async (_request, response) => response.json({ routes: await repository.listWorkerNodeRoutes(response.locals.workerNode.id) }));
+  app.get("/api/internal/gateway/routes", async (request, response) => {
+    if (!tokenMatches(bearerToken(request), gatewayReconcilerToken)) return response.status(401).json({ error: "Gateway authorization failed." });
+    return response.json({ routes: await repository.listGatewayRoutes() });
+  });
 
   app.post("/api/auth/signup", authLimiter, async (request, response) => {
     const parsed = signupSchema.safeParse(request.body);
@@ -135,7 +187,10 @@ export async function createApp(options: { repository?: Repository; billingGatew
     if (!quote.recommendedPlan) return response.status(409).json({ error: "No configured server plan can safely contain this selection." });
     const slug = parsed.data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const installation = await repository.createInstallation({ userId: response.locals.user.id, appIds: parsed.data.appIds, name: parsed.data.name, plan: quote.recommendedPlan.id, state: "planned", hostname: `${slug}.${config.PUBLIC_HOST_TARGET}`, customDomains: [] });
-    installation.applications = await repository.createApplicationInstances(installation.id, installation.appIds, config.PUBLIC_HOST_TARGET);
+    installation.applications = await repository.createApplicationInstances(installation.id, installation.appIds.map((appId) => {
+      const reservation = runtimeReservation(appId);
+      return { appId, memoryReservationMb: reservation.memoryMb, cpuReservationMillis: reservation.cpuMillis };
+    }), config.PUBLIC_HOST_TARGET);
     return response.status(201).json({ installation, quote, provisioningMode: config.PROVISIONING_MODE });
   });
   app.post("/api/installations/:id/domains", requireUser, async (request, response) => {
@@ -154,7 +209,6 @@ export async function createApp(options: { repository?: Repository; billingGatew
     const target = installation.applications?.[0]?.hostname ?? installation.hostname;
     const result = await verifyDomain(parsed.data.domain, target, config.PLATFORM_IPV4, options.domainResolver);
     await repository.setDomainStatus(parsed.data.domain, result.verified ? "verified" : "awaiting-dns");
-    if (result.verified) await repository.enqueueJob(installation.id, "reload-routes", { domain: parsed.data.domain });
     return response.status(result.verified ? 200 : 409).json({ ...result, expected: target });
   });
   app.post("/api/installations/:id/upgrade", requireUser, async (request, response) => {

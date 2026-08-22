@@ -51,6 +51,22 @@ ALTER TABLE installations ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 CREATE INDEX IF NOT EXISTS installations_user_id_idx ON installations(user_id);
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS installation_id UUID REFERENCES installations(id) ON DELETE SET NULL;
 
+CREATE TABLE IF NOT EXISTS worker_nodes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  private_address INET NOT NULL,
+  machine_type TEXT NOT NULL,
+  capacity_memory_mb INTEGER NOT NULL,
+  capacity_cpu_millis INTEGER NOT NULL,
+  system_reserve_memory_mb INTEGER NOT NULL,
+  agent_token_hash TEXT NOT NULL UNIQUE,
+  last_heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE installations ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
+
 CREATE TABLE IF NOT EXISTS application_instances (
   id UUID PRIMARY KEY,
   installation_id UUID NOT NULL REFERENCES installations(id) ON DELETE CASCADE,
@@ -64,6 +80,10 @@ CREATE TABLE IF NOT EXISTS application_instances (
   UNIQUE(installation_id, app_id)
 );
 CREATE INDEX IF NOT EXISTS application_instances_installation_idx ON application_instances(installation_id);
+ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
+ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS memory_reservation_mb INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE application_instances ADD COLUMN IF NOT EXISTS cpu_reservation_millis INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS application_instances_worker_node_idx ON application_instances(worker_node_id, state);
 
 CREATE TABLE IF NOT EXISTS custom_domains (
   id UUID PRIMARY KEY,
@@ -110,6 +130,9 @@ CREATE TABLE IF NOT EXISTS provisioning_jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS provisioning_jobs_claim_idx ON provisioning_jobs(status, available_at, created_at);
+ALTER TABLE provisioning_jobs ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
+ALTER TABLE provisioning_jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS provisioning_jobs_worker_claim_idx ON provisioning_jobs(worker_node_id, status, available_at);
 
 CREATE TABLE IF NOT EXISTS stripe_events (
   event_id TEXT PRIMARY KEY,

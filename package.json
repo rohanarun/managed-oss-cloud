@@ -8,6 +8,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist-server/server/index.js",
     "worker": "node dist-server/server/provisioning-worker.js",
+    "gateway": "node dist-server/server/gateway-reconciler.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
