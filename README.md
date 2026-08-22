@@ -25,10 +25,10 @@ The managed service uses PostgreSQL. Local development without `DATABASE_URL` de
 
 | Product category | Upstream project | Pinned version | Licence | Status |
 | --- | --- | --- | --- | --- |
-| Calendly-style scheduling | [Cal DIY](https://github.com/calcom/cal.diy) | v6.2.0 | MIT | Integration verification |
+| Calendly-style scheduling | [Cal DIY](https://github.com/calcom/cal.diy) | v6.2.0 | AGPL-3.0 | Verified core runtime; customer SMTP/calendar OAuth required |
 | Mailchimp-style newsletters | [listmonk](https://github.com/knadh/listmonk) | v6.2.0 | AGPL-3.0 | Planning enabled |
-| DocuSign-style signatures | [Documenso](https://github.com/documenso/documenso) | v2.17.0 | AGPL-3.0 | Integration verification |
-| Jotform-style forms | [HeyForm](https://github.com/heyform/heyform) | v3.0.1 | AGPL-3.0 | Integration verification |
+| DocuSign-style signatures | [Documenso](https://github.com/documenso/documenso) | v2.17.0 | AGPL-3.0 | Verified core runtime and persistent signing certificate; customer SMTP required |
+| Jotform-style forms | [HeyForm](https://github.com/heyform/heyform) | v3.0.1 | AGPL-3.0 | Verified runtime with managed MongoDB, KeyDB, and uploads |
 | Uptime monitoring | [Uptime Kuma](https://github.com/louislam/uptime-kuma) | 2.3.2 | MIT | Planning enabled |
 | Web analytics | [Umami](https://github.com/umami-software/umami) | v3.3.1 | MIT | Planning enabled |
 

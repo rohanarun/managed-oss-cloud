@@ -160,12 +160,19 @@ async function downloadBackup(objectName: string, filePath: string) {
 }
 
 async function prepareDatabaseDump(instance: ApplicationInstance, directory: string) {
-  if (!['listmonk', 'umami'].includes(instance.appId)) return;
+  const postgresDatabases: Record<string, { user: string; database: string }> = {
+    "cal-diy": { user: "calcom", database: "calendso" },
+    documenso: { user: "documenso", database: "documenso" },
+    listmonk: { user: "listmonk", database: "listmonk" },
+    umami: { user: "umami", database: "umami" },
+  };
+  const postgres = postgresDatabases[instance.appId];
+  if (!postgres && instance.appId !== "heyform") return;
   const backupDirectory = path.join(directory, ".managed-backup");
   await mkdir(backupDirectory, { recursive: true, mode: 0o700 });
-  const user = instance.appId === "listmonk" ? "listmonk" : "umami";
-  const database = user;
-  const dump = await execFileAsync("docker", ["exec", `${instance.containerProject}-db`, "pg_dump", "-U", user, "-d", database, "-Fc"], { encoding: "buffer", timeout: 15 * 60_000, maxBuffer: 1024 * 1024 * 1024 });
+  const dump = postgres
+    ? await execFileAsync("docker", ["exec", `${instance.containerProject}-db`, "pg_dump", "-U", postgres.user, "-d", postgres.database, "-Fc"], { encoding: "buffer", timeout: 15 * 60_000, maxBuffer: 1024 * 1024 * 1024 })
+    : await execFileAsync("docker", ["exec", `${instance.containerProject}-mongo`, "mongodump", "--archive", "--db", "heyform"], { encoding: "buffer", timeout: 15 * 60_000, maxBuffer: 1024 * 1024 * 1024 });
   await writeFile(path.join(backupDirectory, "database.dump"), dump.stdout, { mode: 0o600 });
 }
 
@@ -178,16 +185,17 @@ async function backup(job: AgentJob) {
     const encryptedPath = `${archivePath}.enc`;
     let stopped = false;
     try {
-      if (instance.appId === "uptime-kuma") { await docker(["compose", "-f", composePath, "stop"]); stopped = true; }
+      await docker(["compose", "-f", composePath, "stop", "app"]);
+      stopped = true;
       await prepareDatabaseDump(instance, directory);
-      await execFileAsync("tar", ["-czf", archivePath, "--exclude=./database", "-C", directory, "."], { timeout: 30 * 60_000, maxBuffer: 1024 * 1024 });
+      await execFileAsync("tar", ["-czf", archivePath, "--exclude=./database", "--exclude=./mongodb", "-C", directory, "."], { timeout: 30 * 60_000, maxBuffer: 1024 * 1024 });
       await encryptArchive(archivePath, encryptedPath);
       if (!config.WORKER_NODE_ID) throw new Error("Backup identity is unavailable.");
       const objectName = `${config.WORKER_NODE_ID}/${job.installationId}/${instance.id}/${new Date().toISOString().replaceAll(":", "-")}.tar.gz.enc`;
       await uploadBackup(encryptedPath, objectName);
       backups.push({ applicationInstanceId: instance.id, objectName, sizeBytes: (await stat(encryptedPath)).size });
     } finally {
-      if (stopped) await docker(["compose", "-f", composePath, "start"]).catch(() => undefined);
+      if (stopped) await docker(["compose", "-f", composePath, "start", "app"]).catch(() => undefined);
       await rm(archivePath, { force: true });
       await rm(encryptedPath, { force: true });
       await rm(path.join(directory, ".managed-backup"), { recursive: true, force: true });
@@ -212,11 +220,21 @@ async function restore(job: AgentJob, agent: AgentClient) {
     if (listing.stdout.split("\n").some((entry) => entry.startsWith("/") || entry.split("/").includes(".."))) throw new Error("Backup archive contains an unsafe path.");
     await docker(["compose", "-f", composePath, "down"]);
     await execFileAsync("tar", ["-xzf", archivePath, "-C", directory], { timeout: 30 * 60_000 });
-    if (["listmonk", "umami"].includes(instance.appId)) {
-      const user = instance.appId === "listmonk" ? "listmonk" : "umami";
-      await docker(["compose", "-f", composePath, "up", "-d", "db"]);
+    const postgresDatabases: Record<string, { user: string; database: string }> = {
+      "cal-diy": { user: "calcom", database: "calendso" },
+      documenso: { user: "documenso", database: "documenso" },
+      listmonk: { user: "listmonk", database: "listmonk" },
+      umami: { user: "umami", database: "umami" },
+    };
+    const postgres = postgresDatabases[instance.appId];
+    if (postgres) {
+      await docker(["compose", "-f", composePath, "up", "-d", "--wait", "db"]);
       await docker(["cp", path.join(directory, ".managed-backup/database.dump"), `${instance.containerProject}-db:/tmp/database.dump`]);
-      await docker(["exec", `${instance.containerProject}-db`, "pg_restore", "-U", user, "-d", user, "--clean", "--if-exists", "/tmp/database.dump"]);
+      await docker(["exec", `${instance.containerProject}-db`, "pg_restore", "-U", postgres.user, "-d", postgres.database, "--clean", "--if-exists", "/tmp/database.dump"]);
+    } else if (instance.appId === "heyform") {
+      await docker(["compose", "-f", composePath, "up", "-d", "--wait", "mongo"]);
+      await docker(["cp", path.join(directory, ".managed-backup/database.dump"), `${instance.containerProject}-mongo:/tmp/database.dump`]);
+      await docker(["exec", `${instance.containerProject}-mongo`, "mongorestore", "--archive=/tmp/database.dump", "--drop", "--nsInclude=heyform.*"]);
     }
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
     await reloadRoutes(agent);

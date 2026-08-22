@@ -4,17 +4,17 @@
     "name": "Cal DIY",
     "replaces": "Calendly",
     "category": "Scheduling",
-    "license": "MIT",
+    "license": "AGPL-3.0",
     "sourceUrl": "https://github.com/calcom/cal.diy",
     "description": "Booking pages, availability, team routing, and calendar connections.",
     "version": "v6.2.0",
-    "memoryBudgetMb": 768,
-    "cpuBudgetMillis": 1000,
-    "storageBudgetGb": 10,
+    "memoryBudgetMb": 3072,
+    "cpuBudgetMillis": 1500,
+    "storageBudgetGb": 20,
     "bundleEligible": false,
-    "status": "integration",
+    "status": "ready",
     "requirements": ["PostgreSQL", "Redis", "SMTP", "calendar OAuth"],
-    "deploymentNote": "Awaiting end-to-end OAuth and upgrade testing."
+    "deploymentNote": "Core scheduling runtime is pinned and backup-ready; calendar OAuth and SMTP require customer credentials."
   },
   {
     "id": "documenso",
@@ -25,13 +25,13 @@
     "sourceUrl": "https://github.com/documenso/documenso",
     "description": "Electronic signatures, templates, recipients, and document workflows.",
     "version": "v2.17.0",
-    "memoryBudgetMb": 640,
+    "memoryBudgetMb": 2112,
     "cpuBudgetMillis": 1000,
     "storageBudgetGb": 20,
     "bundleEligible": false,
-    "status": "integration",
+    "status": "ready",
     "requirements": ["PostgreSQL", "SMTP", "object storage"],
-    "deploymentNote": "Awaiting signed-document backup and restore verification."
+    "deploymentNote": "Includes a persistent per-instance signing certificate and database backup; SMTP requires customer credentials."
   },
   {
     "id": "heyform",
@@ -42,13 +42,13 @@
     "sourceUrl": "https://github.com/heyform/heyform",
     "description": "Hosted forms, logic, themes, submissions, and collaboration.",
     "version": "v3.0.1",
-    "memoryBudgetMb": 640,
-    "cpuBudgetMillis": 1000,
+    "memoryBudgetMb": 1312,
+    "cpuBudgetMillis": 750,
     "storageBudgetGb": 20,
     "bundleEligible": false,
-    "status": "integration",
+    "status": "ready",
     "requirements": ["MongoDB", "Redis", "SMTP"],
-    "deploymentNote": "Awaiting attachment storage and migration testing."
+    "deploymentNote": "MongoDB, KeyDB, uploads, encrypted backup, and restore are managed with the application."
   },
   {
     "id": "listmonk",
