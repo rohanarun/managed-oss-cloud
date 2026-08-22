@@ -17,6 +17,12 @@ export interface RuntimeManifest {
 
 export interface ManifestOptions {
   platformNetwork: string;
+  googleOAuth?: {
+    clientId: string;
+    clientSecret: string;
+    stateSecret: string;
+    callbackUrl: string;
+  };
 }
 
 const reservations: Record<string, { memoryMb: number; cpuMillis: number; storageGb: number }> = {
@@ -244,6 +250,12 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
                 MONGO_URI: "mongodb://mongo:27017/heyform",
                 REDIS_HOST: "redis",
                 REDIS_PORT: "6379",
+                ...(options.googleOAuth ? {
+                  GOOGLE_LOGIN_CLIENT_ID: options.googleOAuth.clientId,
+                  GOOGLE_LOGIN_CLIENT_SECRET: options.googleOAuth.clientSecret,
+                  MANAGED_OAUTH_STATE_SECRET: options.googleOAuth.stateSecret,
+                  MANAGED_GOOGLE_CALLBACK_URL: options.googleOAuth.callbackUrl,
+                } : {}),
               },
               volumes: ["./uploads:/app/packages/server/static/upload", "./uploads:/app/packages/server/uploads"],
               expose: ["9157"],

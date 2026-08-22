@@ -14,6 +14,7 @@ import { createBillingService, type BillingGateway } from "./billing.js";
 import { config } from "./config.js";
 import { verifyDomain, type DomainResolver } from "./domain-verification.js";
 import { runtimeReservation } from "./app-manifests.js";
+import { decodeManagedOAuthState } from "./managed-oauth.js";
 import { createRepository, type Repository } from "./repository.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,7 @@ const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "bac
 const workerRegistrationSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/), name: z.string().min(3).max(100), privateAddress: z.ipv4(), machineType: z.string().min(2).max(100), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10), systemReserveMemoryMb: z.number().int().min(256) });
 const workerHeartbeatSchema = z.object({ privateAddress: z.ipv4(), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10) });
 const workerReportSchema = z.object({ status: z.enum(["succeeded", "failed"]), error: z.string().max(1_000).optional(), applications: z.array(z.object({ id: z.string().uuid(), state: z.enum(["queued", "provisioning", "live", "failed", "stopped"]), healthy: z.boolean().optional() })).max(12).optional(), backups: z.array(z.object({ applicationInstanceId: z.string().uuid(), objectName: z.string().min(1).max(1_000), sizeBytes: z.number().int().nonnegative() })).max(12).optional() });
+const oauthCallbackSchema = z.object({ state: z.string().min(8).max(8_000), code: z.string().min(1).max(8_000).optional(), error: z.string().min(1).max(200).optional(), error_description: z.string().max(1_000).optional() }).refine((value) => Boolean(value.code || value.error));
 
 function bearerToken(request: Request) { const authorization = request.get("authorization") ?? ""; return authorization.startsWith("Bearer ") ? authorization.slice(7) : undefined; }
 function tokenMatches(actual: string | undefined, expected: string | undefined) {
@@ -59,6 +61,7 @@ export async function createApp(options: { repository?: Repository; billingGatew
   const catalog = catalogSchema.parse(JSON.parse(await readFile(path.join(projectDirectory, "catalog/apps.json"), "utf8"))) as CatalogApp[];
   const policy = { plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS, systemReserveMb: 192, maximumSafeUtilization: 0.8 };
   const authLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });
+  const oauthLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
 
   app.set("trust proxy", 1);
   app.use(helmet({ contentSecurityPolicy: false }));
@@ -103,6 +106,25 @@ export async function createApp(options: { repository?: Repository; billingGatew
   app.get("/api/health", (_request, response) => response.json({ ok: true, mode: config.PROVISIONING_MODE, persistence: repository.persistence }));
   app.get("/api/config", (_request, response) => response.json({ productName: config.PRODUCT_NAME, provisioningMode: config.PROVISIONING_MODE, persistence: repository.persistence, billingReady: billing.ready, stripePublishableKey: billing.ready ? config.STRIPE_PUBLISHABLE_KEY : undefined, plans: config.plans, platformFeePercent: config.PLATFORM_FEE_PERCENT, platformFeeMinimumCents: config.PLATFORM_FEE_MIN_CENTS }));
   app.get("/api/catalog", (_request, response) => response.json(catalog));
+  app.get("/oauth/google/callback", oauthLimiter, async (request, response) => {
+    if (!config.GOOGLE_OAUTH_STATE_SECRET) return response.status(503).send("Platform Google sign-in is not configured.");
+    const parsed = oauthCallbackSchema.safeParse(request.query);
+    if (!parsed.success) return response.status(400).send("Google sign-in returned an invalid callback.");
+    try {
+      const managedState = decodeManagedOAuthState(parsed.data.state, config.GOOGLE_OAUTH_STATE_SECRET);
+      const targetOrigin = new URL(managedState.origin);
+      const routes = await repository.listGatewayRoutes();
+      if (!routes.some((route) => route.hostname === targetOrigin.hostname)) return response.status(403).send("Google sign-in target is not an active managed application.");
+      const target = new URL("/connect/google/callback", managedState.origin);
+      target.searchParams.set("state", managedState.state);
+      if (parsed.data.code) target.searchParams.set("code", parsed.data.code);
+      if (parsed.data.error) target.searchParams.set("error", parsed.data.error);
+      if (parsed.data.error_description) target.searchParams.set("error_description", parsed.data.error_description);
+      return response.redirect(302, target.toString());
+    } catch {
+      return response.status(400).send("Google sign-in state could not be verified.");
+    }
+  });
 
   app.post("/api/agent/register", async (request, response) => {
     if (!tokenMatches(bearerToken(request), workerBootstrapToken)) return response.status(401).json({ error: "Worker bootstrap authorization failed." });

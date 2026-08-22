@@ -32,4 +32,16 @@ describe("verified application manifests", () => {
   it("fails closed for applications without a verified runtime", () => {
     expect(() => buildRuntimeManifest(instance("unknown"), { platformNetwork: "platform" })).toThrow(/no verified runtime manifest/);
   });
+
+  it("injects hosting-layer Google OAuth only into managed HeyForm", () => {
+    const googleOAuth = { clientId: "platform-client-id", clientSecret: "platform-client-secret", stateSecret: "platform-state-secret", callbackUrl: "https://cloud.getsupers.com/oauth/google/callback" };
+    const heyform = buildRuntimeManifest(instance("heyform"), { platformNetwork: "platform", googleOAuth });
+    expect(heyform.compose.services.app.environment).toMatchObject({
+      GOOGLE_LOGIN_CLIENT_ID: googleOAuth.clientId,
+      GOOGLE_LOGIN_CLIENT_SECRET: googleOAuth.clientSecret,
+      MANAGED_OAUTH_STATE_SECRET: googleOAuth.stateSecret,
+      MANAGED_GOOGLE_CALLBACK_URL: googleOAuth.callbackUrl,
+    });
+    expect(JSON.stringify(buildRuntimeManifest(instance("uptime-kuma"), { platformNetwork: "platform", googleOAuth }))).not.toContain("platform-client-secret");
+  });
 });

@@ -25,11 +25,11 @@ describe("managed compose upgrades", () => {
     };
     await writeFile(composePath, JSON.stringify(compose), { mode: 0o600 });
 
-    await updateComposeApplicationImage(composePath, "ghcr.io/example/app:v2@sha256:cccccccc");
+    await updateComposeApplicationImage(composePath, "ghcr.io/example/app:v2@sha256:cccccccc", { GOOGLE_LOGIN_CLIENT_ID: "platform-client" });
 
     const upgraded = JSON.parse(await readFile(composePath, "utf8"));
     expect(upgraded.services.app.image).toBe("ghcr.io/example/app:v2@sha256:cccccccc");
-    expect(upgraded.services.app.environment).toEqual(compose.services.app.environment);
+    expect(upgraded.services.app.environment).toEqual({ ...compose.services.app.environment, GOOGLE_LOGIN_CLIENT_ID: "platform-client" });
     expect(upgraded.services.app.volumes).toEqual(compose.services.app.volumes);
     expect(upgraded.services.db).toEqual(compose.services.db);
     expect(upgraded.networks).toEqual(compose.networks);
