@@ -39,6 +39,9 @@ describe("tenant worker pool", () => {
     expect(firstClaim.status).toBe(200);
     expect(firstClaim.body.job.installationId).toBe(first.id);
     expect(JSON.stringify(firstClaim.body)).not.toContain(user.email);
+    const resumedClaim = await request(app).post("/api/agent/jobs/claim").set("authorization", `Bearer ${nodeOneToken}`).send({});
+    expect(resumedClaim.body.job.id).toBe(firstClaim.body.job.id);
+    expect(resumedClaim.body.job.attempts).toBe(firstClaim.body.job.attempts);
     const firstApplication = firstClaim.body.job.applications[0];
     expect((await request(app).post(`/api/agent/jobs/${firstClaim.body.job.id}/report`).set("authorization", `Bearer ${nodeOneToken}`).send({ status: "succeeded", applications: [{ id: firstApplication.id, state: "live", healthy: true }] })).status).toBe(204);
 
@@ -49,7 +52,8 @@ describe("tenant worker pool", () => {
     expect(secondClaim.body.job.installationId).toBe(second.id);
 
     const stop = await repository.enqueueJob(first.id, "stop", { applicationInstanceId: firstApplication.id });
-    expect((await request(app).post("/api/agent/jobs/claim").set("authorization", `Bearer ${nodeTwoToken}`).send({})).status).toBe(204);
+    const secondResumedClaim = await request(app).post("/api/agent/jobs/claim").set("authorization", `Bearer ${nodeTwoToken}`).send({});
+    expect(secondResumedClaim.body.job.id).toBe(secondClaim.body.job.id);
     const stickyClaim = await request(app).post("/api/agent/jobs/claim").set("authorization", `Bearer ${nodeOneToken}`).send({});
     expect(stickyClaim.body.job.id).toBe(stop.id);
 
