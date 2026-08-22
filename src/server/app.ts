@@ -31,7 +31,7 @@ const signupSchema = z.object({ displayName: z.string().trim().min(2).max(60), e
 const loginSchema = z.object({ email: z.string().trim().toLowerCase().email(), password: z.string().min(1).max(200) });
 const checkoutSchema = z.object({ installationId: z.string().uuid() });
 const cloneApplicationSchema = z.object({ appId: z.string().min(1).max(100) });
-const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "backup", "restore"]), objectName: z.string().max(1_000).optional(), applicationInstanceId: z.string().uuid().optional() });
+const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "backup", "restore"]), objectName: z.string().max(1_000).optional(), applicationInstanceId: z.string().uuid() });
 const workerRegistrationSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/), name: z.string().min(3).max(100), privateAddress: z.ipv4(), machineType: z.string().min(2).max(100), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10), systemReserveMemoryMb: z.number().int().min(256) });
 const workerHeartbeatSchema = z.object({ privateAddress: z.ipv4(), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10) });
 const workerReportSchema = z.object({ status: z.enum(["succeeded", "failed"]), error: z.string().max(1_000).optional(), applications: z.array(z.object({ id: z.string().uuid(), state: z.enum(["queued", "provisioning", "live", "failed", "stopped"]), healthy: z.boolean().optional() })).max(12).optional(), backups: z.array(z.object({ applicationInstanceId: z.string().uuid(), objectName: z.string().min(1).max(1_000), sizeBytes: z.number().int().nonnegative() })).max(12).optional() });
@@ -262,9 +262,10 @@ export async function createApp(options: { repository?: Repository; billingGatew
   app.post("/api/installations/:id/actions", requireUser, async (request, response) => {
     if (config.PROVISIONING_MODE !== "live") return response.status(503).json({ error: "Live provisioning is still locked." });
     const parsed = actionSchema.safeParse(request.body);
-    if (!parsed.success) return response.status(400).json({ error: "Choose a valid server action." });
+    if (!parsed.success) return response.status(400).json({ error: "Choose a valid server action and application." });
     const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));
     if (!installation) return response.status(404).json({ error: "Server not found." });
+    if (!installation.applications?.some((application) => application.id === parsed.data.applicationInstanceId)) return response.status(404).json({ error: "Application not found on this server." });
     if (parsed.data.action === "restore") {
       if (!parsed.data.objectName || !parsed.data.applicationInstanceId) return response.status(400).json({ error: "Choose a verified backup to restore." });
       const backups = await repository.listBackups(response.locals.user.id, installation.id);

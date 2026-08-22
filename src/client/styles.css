@@ -239,10 +239,14 @@ a { color: inherit; text-decoration: none; }
 .domain-list span { display: flex; align-items: center; gap: 8px; }
 .domain-list i { width: 7px; height: 7px; border-radius: 50%; background: #e9b949; }
 .domain-list button { display: flex; gap: 6px; border: 0; color: #8ba5ff; background: none; cursor: pointer; }
-.managed-app { margin: 10px 0; padding: 13px 15px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.04); font-size: 11px; }
+.managed-app { margin: 10px 0; padding: 13px 15px; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: rgba(255,255,255,.04); font-size: 11px; }
+.managed-app > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.managed-app small { overflow: hidden; color: #777e8d; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .managed-app strong { color: #93d9be; font-size: 9px; text-transform: uppercase; }
 .managed-app a { display: flex; align-items: center; gap: 5px; color: #8ba5ff; text-decoration: none; }
 .managed-app svg { width: 13px; height: 13px; }
+.managed-app-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 7px; }
+.managed-app-actions button, .managed-app-actions a { min-height: 30px; padding: 0 10px; border: 1px solid rgba(255,255,255,.13); border-radius: 7px; color: #b7c5ff; background: rgba(255,255,255,.05); cursor: pointer; font-size: 9px; }
 .clone-service { margin-top: 18px; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 .clone-service select, .clone-service button { min-height: 42px; border: 1px solid rgba(255,255,255,.14); border-radius: 9px; color: white; background: #1b1f2a; }
 .clone-service select { padding: 0 12px; }

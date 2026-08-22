@@ -281,7 +281,13 @@ async function run() {
   process.stdout.write(`Provisioning worker ${config.WORKER_NODE_ID} ready\n`);
   setInterval(() => { void agent.heartbeat().catch((error) => process.stderr.write(`${error instanceof Error ? error.message : "Worker heartbeat failed."}\n`)); }, 30_000);
   while (true) {
-    const job = await agent.claim();
+    let job: AgentJob | undefined;
+    try { job = await agent.claim(); }
+    catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : "Worker claim failed."}\n`);
+      await new Promise((resolve) => setTimeout(resolve, config.PROVISIONING_POLL_MILLISECONDS));
+      continue;
+    }
     if (!job) { await new Promise((resolve) => setTimeout(resolve, config.PROVISIONING_POLL_MILLISECONDS)); continue; }
     try {
       let backups: WorkerReport["backups"];
