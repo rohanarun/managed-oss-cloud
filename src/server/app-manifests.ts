@@ -19,10 +19,10 @@ export interface ManifestOptions {
   platformNetwork: string;
 }
 
-const reservations: Record<string, { memoryMb: number; cpuMillis: number }> = {
-  "uptime-kuma": { memoryMb: 384, cpuMillis: 250 },
-  listmonk: { memoryMb: 576, cpuMillis: 500 },
-  umami: { memoryMb: 768, cpuMillis: 750 },
+const reservations: Record<string, { memoryMb: number; cpuMillis: number; storageGb: number }> = {
+  "uptime-kuma": { memoryMb: 384, cpuMillis: 250, storageGb: 3 },
+  listmonk: { memoryMb: 576, cpuMillis: 500, storageGb: 10 },
+  umami: { memoryMb: 768, cpuMillis: 750, storageGb: 10 },
 };
 
 export function runtimeReservation(appId: string) {

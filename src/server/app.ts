@@ -21,7 +21,7 @@ const projectDirectory = path.resolve(moduleDirectory, "../..");
 const sessionCookie = "opendock_session";
 const catalogSchema = z.array(z.object({
   id: z.string(), name: z.string(), replaces: z.string(), category: z.string(), license: z.string(), sourceUrl: z.string().url(), description: z.string(), version: z.string(),
-  memoryBudgetMb: z.number().int().positive(), bundleEligible: z.boolean(), status: z.enum(["ready", "integration"]), requirements: z.array(z.string()), deploymentNote: z.string(),
+  memoryBudgetMb: z.number().int().positive(), cpuBudgetMillis: z.number().int().positive(), storageBudgetGb: z.number().int().positive(), bundleEligible: z.boolean(), status: z.enum(["ready", "integration"]), requirements: z.array(z.string()), deploymentNote: z.string(),
 }));
 const appIdsSchema = z.object({ appIds: z.array(z.string()).min(1).max(12) });
 const installSchema = appIdsSchema.extend({ name: z.string().trim().min(2).max(60).regex(/^[a-zA-Z0-9][a-zA-Z0-9 _-]+$/) });
@@ -30,9 +30,10 @@ const upgradeSchema = z.object({ plan: z.string().min(1) });
 const signupSchema = z.object({ displayName: z.string().trim().min(2).max(60), email: z.string().trim().toLowerCase().email(), password: z.string().min(10).max(200) });
 const loginSchema = z.object({ email: z.string().trim().toLowerCase().email(), password: z.string().min(1).max(200) });
 const checkoutSchema = z.object({ installationId: z.string().uuid() });
+const cloneApplicationSchema = z.object({ appId: z.string().min(1).max(100) });
 const actionSchema = z.object({ action: z.enum(["start", "stop", "upgrade", "backup", "restore"]), objectName: z.string().max(1_000).optional(), applicationInstanceId: z.string().uuid().optional() });
-const workerRegistrationSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/), name: z.string().min(3).max(100), privateAddress: z.ipv4(), machineType: z.string().min(2).max(100), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), systemReserveMemoryMb: z.number().int().min(256) });
-const workerHeartbeatSchema = z.object({ privateAddress: z.ipv4(), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250) });
+const workerRegistrationSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,62}$/), name: z.string().min(3).max(100), privateAddress: z.ipv4(), machineType: z.string().min(2).max(100), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10), systemReserveMemoryMb: z.number().int().min(256) });
+const workerHeartbeatSchema = z.object({ privateAddress: z.ipv4(), capacityMemoryMb: z.number().int().min(1024), capacityCpuMillis: z.number().int().min(250), capacityStorageGb: z.number().int().min(10) });
 const workerReportSchema = z.object({ status: z.enum(["succeeded", "failed"]), error: z.string().max(1_000).optional(), applications: z.array(z.object({ id: z.string().uuid(), state: z.enum(["queued", "provisioning", "live", "failed", "stopped"]), healthy: z.boolean().optional() })).max(12).optional(), backups: z.array(z.object({ applicationInstanceId: z.string().uuid(), objectName: z.string().min(1).max(1_000), sizeBytes: z.number().int().nonnegative() })).max(12).optional() });
 
 function bearerToken(request: Request) { const authorization = request.get("authorization") ?? ""; return authorization.startsWith("Bearer ") ? authorization.slice(7) : undefined; }
@@ -189,7 +190,7 @@ export async function createApp(options: { repository?: Repository; billingGatew
     const installation = await repository.createInstallation({ userId: response.locals.user.id, appIds: parsed.data.appIds, name: parsed.data.name, plan: quote.recommendedPlan.id, state: "planned", hostname: `${slug}.${config.PUBLIC_HOST_TARGET}`, customDomains: [] });
     installation.applications = await repository.createApplicationInstances(installation.id, installation.appIds.map((appId) => {
       const reservation = runtimeReservation(appId);
-      return { appId, memoryReservationMb: reservation.memoryMb, cpuReservationMillis: reservation.cpuMillis };
+      return { appId, memoryReservationMb: reservation.memoryMb, cpuReservationMillis: reservation.cpuMillis, storageReservationGb: reservation.storageGb };
     }), config.PUBLIC_HOST_TARGET);
     return response.status(201).json({ installation, quote, provisioningMode: config.PROVISIONING_MODE });
   });
@@ -214,9 +215,44 @@ export async function createApp(options: { repository?: Repository; billingGatew
   app.post("/api/installations/:id/upgrade", requireUser, async (request, response) => {
     const parsed = upgradeSchema.safeParse(request.body);
     if (!parsed.success || !config.plans.some((plan) => plan.id === parsed.data.plan)) return response.status(400).json({ error: "Choose a configured server plan." });
-    const installation = await repository.upgrade(response.locals.user.id, String(request.params.id), parsed.data.plan);
+    const existing = await repository.getInstallation(response.locals.user.id, String(request.params.id));
+    if (!existing) return response.status(404).json({ error: "Server not found." });
+    const plan = config.plans.find((item) => item.id === parsed.data.plan)!;
+    const applications = existing.applications ?? [];
+    const memory = applications.reduce((sum, app) => sum + app.memoryReservationMb, policy.systemReserveMb);
+    const cpu = applications.reduce((sum, app) => sum + app.cpuReservationMillis, 0);
+    const storage = applications.reduce((sum, app) => sum + app.storageReservationGb, 0);
+    if (applications.length > plan.maxServices || memory > plan.memoryMb * policy.maximumSafeUtilization || cpu > plan.cpu * 1_000 || storage > plan.storageGb) return response.status(409).json({ error: "That plan is smaller than the services already reserved on this server." });
+    if (existing.state !== "planned") {
+      if (!billing.ready) return response.status(503).json({ error: "Paid server upgrades remain locked until Stripe reconciliation is enabled." });
+      const platformFeeMonthlyCents = Math.max(Math.ceil(plan.infrastructureMonthlyCents * (config.PLATFORM_FEE_PERCENT / 100)), config.PLATFORM_FEE_MIN_CENTS);
+      try { await billing.upgrade(response.locals.user, existing, plan, platformFeeMonthlyCents); }
+      catch (error) { return response.status(409).json({ error: error instanceof Error ? error.message : "Stripe could not reconcile the upgrade." }); }
+    }
+    const installation = await repository.upgrade(response.locals.user.id, existing.id, parsed.data.plan);
     if (!installation) return response.status(404).json({ error: "Server not found." });
     return response.json({ installation, provisioningMode: config.PROVISIONING_MODE, deployRequired: true });
+  });
+  app.post("/api/installations/:id/applications", requireUser, async (request, response) => {
+    const parsed = cloneApplicationSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: "Choose a valid application to clone." });
+    const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));
+    if (!installation) return response.status(404).json({ error: "Server not found." });
+    const catalogApp = catalog.find((item) => item.id === parsed.data.appId);
+    if (!catalogApp || catalogApp.status !== "ready") return response.status(409).json({ error: "That application does not have a verified runtime yet." });
+    const plan = config.plans.find((item) => item.id === installation.plan);
+    if (!plan) return response.status(409).json({ error: "Upgrade this legacy server to a current plan before cloning services." });
+    const applications = installation.applications ?? [];
+    const reservation = runtimeReservation(catalogApp.id);
+    const memory = applications.reduce((sum, app) => sum + app.memoryReservationMb, policy.systemReserveMb) + reservation.memoryMb;
+    const cpu = applications.reduce((sum, app) => sum + app.cpuReservationMillis, 0) + reservation.cpuMillis;
+    const storage = applications.reduce((sum, app) => sum + app.storageReservationGb, 0) + reservation.storageGb;
+    if (applications.length + 1 > plan.maxServices || memory > plan.memoryMb * policy.maximumSafeUtilization || cpu > plan.cpu * 1_000 || storage > plan.storageGb) return response.status(409).json({ error: `Upgrade to a larger plan before cloning another service. ${plan.label} allows ${plan.maxServices} services, ${plan.storageGb} GB storage, ${plan.memoryMb} MB memory, and ${plan.cpu} vCPU.` });
+    if (!(await repository.canReserveOnInstallationWorker(installation.id, { memoryReservationMb: reservation.memoryMb, cpuReservationMillis: reservation.cpuMillis, storageReservationGb: reservation.storageGb }))) return response.status(409).json({ error: "This worker needs more physical capacity before the service can be cloned safely." });
+    const [application] = await repository.createApplicationInstances(installation.id, [{ appId: catalogApp.id, memoryReservationMb: reservation.memoryMb, cpuReservationMillis: reservation.cpuMillis, storageReservationGb: reservation.storageGb }], config.PUBLIC_HOST_TARGET);
+    await repository.appendApplicationId(installation.id, catalogApp.id);
+    const job = installation.state === "live" ? await repository.enqueueJob(installation.id, "install", { applicationInstanceId: application.id }) : undefined;
+    return response.status(201).json({ application, job, quota: { services: applications.length + 1, maxServices: plan.maxServices, storageGb: storage, maxStorageGb: plan.storageGb } });
   });
   app.get("/api/installations/:id/backups", requireUser, async (request, response) => {
     const installation = await repository.getInstallation(response.locals.user.id, String(request.params.id));

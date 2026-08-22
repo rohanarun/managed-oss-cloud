@@ -10,6 +10,8 @@ export interface CatalogApp {
   description: string;
   version: string;
   memoryBudgetMb: number;
+  cpuBudgetMillis: number;
+  storageBudgetGb: number;
   bundleEligible: boolean;
   status: AppStatus;
   requirements: string[];
@@ -21,12 +23,17 @@ export interface ComputePlan {
   label: string;
   memoryMb: number;
   cpu: number;
+  storageGb: number;
+  maxServices: number;
+  infrastructureMonthlyCents: number;
   monthlyCents: number;
 }
 
 export interface Quote {
   selectedApps: CatalogApp[];
   requestedMemoryMb: number;
+  requestedCpuMillis: number;
+  requestedStorageGb: number;
   reservedMemoryMb: number;
   compatibleWithBundle: boolean;
   recommendedPlan: ComputePlan | null;
@@ -72,6 +79,7 @@ export interface ApplicationInstance {
   workerNodeId?: string;
   memoryReservationMb: number;
   cpuReservationMillis: number;
+  storageReservationGb: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -104,9 +112,11 @@ export interface WorkerNode {
   machineType: string;
   capacityMemoryMb: number;
   capacityCpuMillis: number;
+  capacityStorageGb: number;
   systemReserveMemoryMb: number;
   reservedMemoryMb: number;
   reservedCpuMillis: number;
+  reservedStorageGb: number;
   lastHeartbeatAt: string;
   createdAt: string;
   updatedAt: string;

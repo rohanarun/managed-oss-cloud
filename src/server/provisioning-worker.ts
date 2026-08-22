@@ -38,8 +38,8 @@ class AgentClient {
   async initialize() {
     this.token = (await readFile(config.WORKER_AGENT_TOKEN_FILE, "utf8").catch(() => "")).trim();
     if (!this.token) {
-      if (!config.WORKER_BOOTSTRAP_TOKEN || !config.WORKER_NODE_ID || !config.WORKER_NODE_NAME || !config.WORKER_PRIVATE_ADDRESS || !config.WORKER_MACHINE_TYPE || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS) throw new Error("Remote worker registration settings are incomplete.");
-      const registered = await this.request<{ agentToken: string }>("/api/agent/register", { method: "POST", body: JSON.stringify({ id: config.WORKER_NODE_ID, name: config.WORKER_NODE_NAME, privateAddress: config.WORKER_PRIVATE_ADDRESS, machineType: config.WORKER_MACHINE_TYPE, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB }) }, config.WORKER_BOOTSTRAP_TOKEN);
+      if (!config.WORKER_BOOTSTRAP_TOKEN || !config.WORKER_NODE_ID || !config.WORKER_NODE_NAME || !config.WORKER_PRIVATE_ADDRESS || !config.WORKER_MACHINE_TYPE || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS || !config.WORKER_CAPACITY_STORAGE_GB) throw new Error("Remote worker registration settings are incomplete.");
+      const registered = await this.request<{ agentToken: string }>("/api/agent/register", { method: "POST", body: JSON.stringify({ id: config.WORKER_NODE_ID, name: config.WORKER_NODE_NAME, privateAddress: config.WORKER_PRIVATE_ADDRESS, machineType: config.WORKER_MACHINE_TYPE, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, capacityStorageGb: config.WORKER_CAPACITY_STORAGE_GB, systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB }) }, config.WORKER_BOOTSTRAP_TOKEN);
       if (!registered?.agentToken) throw new Error("Control plane did not return a worker token.");
       this.token = registered.agentToken;
       await mkdir(path.dirname(config.WORKER_AGENT_TOKEN_FILE), { recursive: true, mode: 0o700 });
@@ -49,8 +49,8 @@ class AgentClient {
   }
 
   async heartbeat() {
-    if (!config.WORKER_PRIVATE_ADDRESS || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS) throw new Error("Worker capacity settings are incomplete.");
-    await this.request("/api/agent/heartbeat", { method: "POST", body: JSON.stringify({ privateAddress: config.WORKER_PRIVATE_ADDRESS, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS }) });
+    if (!config.WORKER_PRIVATE_ADDRESS || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS || !config.WORKER_CAPACITY_STORAGE_GB) throw new Error("Worker capacity settings are incomplete.");
+    await this.request("/api/agent/heartbeat", { method: "POST", body: JSON.stringify({ privateAddress: config.WORKER_PRIVATE_ADDRESS, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, capacityStorageGb: config.WORKER_CAPACITY_STORAGE_GB }) });
   }
 
   async claim() { return (await this.request<{ job: AgentJob }>("/api/agent/jobs/claim", { method: "POST", body: "{}" }))?.job; }
@@ -103,7 +103,7 @@ async function writeCompose(instance: ApplicationInstance, manifest: RuntimeMani
 async function reloadRoutes(agent: AgentClient) {
   const routes = await agent.routes();
   const blocks = routes.map((route) => {
-    const instance: ApplicationInstance = { id: "00000000-0000-0000-0000-000000000000", installationId: "", appId: route.appId, state: "live", hostname: route.hostname, containerProject: route.containerProject, customDomains: [], memoryReservationMb: 0, cpuReservationMillis: 0, createdAt: "", updatedAt: "" };
+    const instance: ApplicationInstance = { id: "00000000-0000-0000-0000-000000000000", installationId: "", appId: route.appId, state: "live", hostname: route.hostname, containerProject: route.containerProject, customDomains: [], memoryReservationMb: 0, cpuReservationMillis: 0, storageReservationGb: 0, createdAt: "", updatedAt: "" };
     const manifest = buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK });
     return `http://${route.hostname}:8080 {\n  encode zstd gzip\n  reverse_proxy ${manifest.primaryContainer}:${manifest.internalPort}\n}`;
   });
@@ -228,10 +228,13 @@ async function restore(job: AgentJob, agent: AgentClient) {
 }
 
 async function install(job: AgentJob, agent: AgentClient) {
-  const manifests = job.applications.map((instance) => buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK }));
+  const requestedId = typeof job.payload.applicationInstanceId === "string" ? job.payload.applicationInstanceId : undefined;
+  const targets = requestedId ? job.applications.filter((instance) => instance.id === requestedId) : job.applications.filter((instance) => instance.state === "queued" || instance.state === "provisioning");
+  if (!targets.length) throw new Error("Install job did not include a queued application.");
+  const manifests = targets.map((instance) => buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK }));
   await assertCapacity(manifests);
-  for (let index = 0; index < job.applications.length; index += 1) {
-    const instance = job.applications[index];
+  for (let index = 0; index < targets.length; index += 1) {
+    const instance = targets[index];
     const manifest = manifests[index];
     const composePath = await writeCompose(instance, manifest);
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);

@@ -30,6 +30,7 @@ output "capacity_model" {
     worker_machine_type      = var.worker_machine_type
     memory_mb_per_worker     = var.worker_capacity_memory_mb
     cpu_millis_per_worker    = var.worker_capacity_cpu_millis
+    storage_gb_per_worker    = var.worker_capacity_storage_gb
     system_reserve_memory_mb = var.worker_system_reserve_memory_mb
   }
 }

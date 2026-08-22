@@ -26,7 +26,7 @@ terraform -chdir=infra/google-cloud plan
 terraform -chdir=infra/google-cloud apply
 ```
 
-Terraform prints the static IPv4, dashboard URL, control-plane SSH command, private worker addresses, and the configured capacity envelope. The control plane runs PostgreSQL, the API, and the edge Caddy gateway. Each worker runs only its authenticated agent, a private Caddy listener, and assigned tenant containers. Keep `PROVISIONING_MODE=dry-run`, `BILLING_MODE=disabled`, and `worker_count=0` until the live-provisioning gates in the README pass.
+Terraform prints the static IPv4, dashboard URL, control-plane SSH command, private worker addresses, and the configured capacity envelope. The control plane runs PostgreSQL, the API, and the edge Caddy gateway. Each worker runs only its authenticated agent, a private Caddy listener, and assigned tenant containers. Keep `PROVISIONING_MODE=dry-run` and `BILLING_MODE=disabled` until the live-provisioning gates in the README pass. A worker may be registered in dry-run to prove private networking and heartbeats; job leasing remains locked.
 
 Set `control_plane_domain` and `apps_domain` in `terraform.tfvars` before production DNS. For a reproducible production deploy, replace the container's `latest` tag with the digest published by GitHub Actions. Stripe and backup keys belong in Google Secret Manager; the runtime service account receives access only to the named secrets and backup bucket.
 
@@ -47,7 +47,9 @@ The edge gateway verifies the custom domain, obtains TLS, and proxies over the p
 
 ## Capacity
 
-The catalogue is not licence-limited. Running capacity is finite. The default `e2-medium` is only the control plane. Default application workers are `e2-standard-2` nodes advertising 7,168 MB and 1,800 CPU-millis after an explicit system reserve. Verified app reservations are enforced before placement. When no worker fits, the install remains queued and capacity must be added; the scheduler does not silently overload an existing tenant node.
+The catalogue is not licence-limited. Running capacity is finite. The default `e2-medium` is only the control plane. Default application workers are private `e2-standard-2` nodes with 200 GB `pd-standard` disks, advertising 7,168 MB, 1,800 CPU-millis, and 180 GB of schedulable storage after explicit system and disk reserves. Verified application reservations are enforced before placement. When no worker fits, the install remains queued and capacity must be added; the scheduler does not silently overload an existing node.
+
+Paid quotas are pooled across the worker fleet. Starter is $7 monthly for 1.5 GB memory, 0.5 vCPU, 10 GB storage, and two service instances; Scale is $50 for 6 GB, 2 vCPU, 100 GB, and 12; Fleet is $200 for 24 GB, 8 vCPU, 500 GB, and 50. These are quota envelopes rather than dedicated-machine claims. Each cloned service gets its own storage reservation and can be placed on another worker while remaining in the same customer workspace.
 
 Hundreds of customers therefore means a fleet, not one larger VM. The exact node count depends on the mix of applications, active usage, storage, and outbound email/traffic. Increase `worker_count` in a reviewed Terraform plan, or use the same worker registration API from a separately governed autoscaler after drain and cost controls are proven.
 
