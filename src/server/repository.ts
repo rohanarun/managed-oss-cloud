@@ -148,7 +148,13 @@ export class MemoryRepository implements Repository {
   async claimWorkerJob(nodeId: string) {
     const worker = this.workers.get(nodeId);
     if (!worker || worker.status !== "ready") return undefined;
-    if ([...this.jobs.values()].some((job) => job.workerNodeId === nodeId && job.status === "running")) return undefined;
+    const running = [...this.jobs.values()].find((job) => job.workerNodeId === nodeId && job.status === "running");
+    if (running) {
+      const targetId = typeof running.payload.applicationInstanceId === "string" ? running.payload.applicationInstanceId : undefined;
+      const applications = [...this.applications.values()].filter((app) => app.installationId === running.installationId && (!targetId || app.id === targetId));
+      running.leaseExpiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+      return { ...running, applications };
+    }
     const jobs = [...this.jobs.values()].filter((item) => item.status === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     let job = jobs.find((item) => item.workerNodeId === nodeId);
     if (!job) job = jobs.find((item) => {
@@ -319,7 +325,13 @@ export class PostgresRepository implements Repository {
       await client.query("UPDATE provisioning_jobs SET status='queued',locked_at=NULL,locked_by=NULL,lease_expires_at=NULL,available_at=NOW(),updated_at=NOW() WHERE status='running' AND lease_expires_at<NOW() AND attempts<3");
       const nodeResult = await client.query("SELECT * FROM worker_nodes WHERE id=$1 AND status='ready' AND last_heartbeat_at>NOW()-INTERVAL '2 minutes' FOR UPDATE", [nodeId]);
       if (!nodeResult.rows[0]) { await client.query("ROLLBACK"); return undefined; }
-      if ((await client.query("SELECT 1 FROM provisioning_jobs WHERE worker_node_id=$1 AND status='running' LIMIT 1", [nodeId])).rowCount) { await client.query("ROLLBACK"); return undefined; }
+      const active = await client.query("UPDATE provisioning_jobs SET lease_expires_at=NOW()+INTERVAL '15 minutes',updated_at=NOW() WHERE id=(SELECT id FROM provisioning_jobs WHERE worker_node_id=$1 AND status='running' ORDER BY locked_at LIMIT 1 FOR UPDATE) RETURNING *", [nodeId]);
+      if (active.rows[0]) {
+        const job = active.rows[0];
+        const apps = await client.query("SELECT * FROM application_instances WHERE installation_id=$1 AND (NOT ($2::jsonb ? 'applicationInstanceId') OR id=($2::jsonb->>'applicationInstanceId')::uuid) ORDER BY created_at", [job.installation_id, job.payload ?? {}]);
+        await client.query("COMMIT");
+        return { id: String(job.id), installationId: String(job.installation_id), action: job.action, status: job.status, attempts: Number(job.attempts), payload: job.payload ?? {}, workerNodeId: nodeId, leaseExpiresAt: new Date(String(job.lease_expires_at)).toISOString(), createdAt: new Date(String(job.created_at)).toISOString(), applications: apps.rows.map((app) => this.application(app)) } as AgentJob;
+      }
       const node = nodeResult.rows[0];
       const reservation = await client.query("SELECT COALESCE(SUM(memory_reservation_mb),0) memory,COALESCE(SUM(cpu_reservation_millis),0) cpu,COALESCE(SUM(storage_reservation_gb),0) storage FROM application_instances WHERE worker_node_id=$1", [nodeId]);
       const assigned = await client.query("SELECT j.* FROM provisioning_jobs j WHERE j.status='queued' AND j.available_at<=NOW() AND j.worker_node_id=$1 ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1", [nodeId]);
