@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS worker_nodes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS capacity_storage_gb INTEGER NOT NULL DEFAULT 10;
 ALTER TABLE installations ADD COLUMN IF NOT EXISTS worker_node_id TEXT REFERENCES worker_nodes(id) ON DELETE SET NULL;
 UPDATE installations SET plan=CASE plan WHEN 'micro' THEN 'starter' WHEN 'small' THEN 'scale' WHEN 'medium' THEN 'fleet' ELSE plan END WHERE plan IN ('micro','small','medium');
 
