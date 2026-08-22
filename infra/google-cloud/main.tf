@@ -11,6 +11,7 @@ resource "google_service_account" "runtime" {
 }
 
 resource "google_secret_manager_secret_iam_member" "stripe" {
+  count      = var.billing_mode == "live" ? 1 : 0
   project    = var.project_id
   secret_id  = var.stripe_secret_name
   role       = "roles/secretmanager.secretAccessor"
@@ -145,13 +146,13 @@ resource "google_compute_instance" "managed_oss" {
       curl -fsS -H "Authorization: Bearer $${access_token}" "https://secretmanager.googleapis.com/v1/projects/${var.project_id}/secrets/$${secret_name}/versions/latest:access" | jq -r .payload.data | base64 -d
     }
     umask 077
-    STRIPE_SECRET_KEY="$(access_secret '${var.stripe_secret_name}')"
     cat > /opt/managed-oss/config/billing.env <<EOF
-    STRIPE_SECRET_KEY=$${STRIPE_SECRET_KEY}
+    STRIPE_SECRET_KEY=
     STRIPE_PUBLISHABLE_KEY=${var.stripe_publishable_key}
-    BILLING_MODE=${var.billing_mode}
+    STRIPE_WEBHOOK_SECRET=
+    BILLING_MODE=disabled
     EOF
-    ${var.billing_mode == "live" ? "STRIPE_WEBHOOK_SECRET=\"$(access_secret '${var.stripe_webhook_secret_name}')\"\nprintf 'STRIPE_WEBHOOK_SECRET=%s\\n' \"$${STRIPE_WEBHOOK_SECRET}\" >> /opt/managed-oss/config/billing.env" : "printf 'STRIPE_WEBHOOK_SECRET=\\n' >> /opt/managed-oss/config/billing.env"}
+    ${var.billing_mode == "live" ? "STRIPE_SECRET_KEY=\"$(access_secret '${var.stripe_secret_name}')\"\nSTRIPE_WEBHOOK_SECRET=\"$(access_secret '${var.stripe_webhook_secret_name}')\"\ncat > /opt/managed-oss/config/billing.env <<EOF\nSTRIPE_SECRET_KEY=$${STRIPE_SECRET_KEY}\nSTRIPE_PUBLISHABLE_KEY=${var.stripe_publishable_key}\nSTRIPE_WEBHOOK_SECRET=$${STRIPE_WEBHOOK_SECRET}\nBILLING_MODE=live\nEOF" : ""}
     BACKUP_KEY_HEX="$(access_secret '${var.backup_key_secret_name}')"
     cat > /opt/managed-oss/config/worker.env <<EOF
     BACKUP_KEY_HEX=$${BACKUP_KEY_HEX}
