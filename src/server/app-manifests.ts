@@ -19,6 +19,18 @@ export interface ManifestOptions {
   platformNetwork: string;
 }
 
+const reservations: Record<string, { memoryMb: number; cpuMillis: number }> = {
+  "uptime-kuma": { memoryMb: 384, cpuMillis: 250 },
+  listmonk: { memoryMb: 576, cpuMillis: 500 },
+  umami: { memoryMb: 768, cpuMillis: 750 },
+};
+
+export function runtimeReservation(appId: string) {
+  const reservation = reservations[appId];
+  if (!reservation) throw new Error(`Application ${appId} has no verified runtime reservation.`);
+  return reservation;
+}
+
 function secret(bytes = 24) {
   return randomBytes(bytes).toString("hex");
 }

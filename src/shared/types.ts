@@ -55,6 +55,7 @@ export interface Installation {
   customDomains: string[];
   applications?: ApplicationInstance[];
   failureReason?: string;
+  workerNodeId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -68,6 +69,9 @@ export interface ApplicationInstance {
   containerProject: string;
   customDomains: CustomDomain[];
   lastHealthAt?: string;
+  workerNodeId?: string;
+  memoryReservationMb: number;
+  cpuReservationMillis: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,7 +91,36 @@ export interface ProvisioningJob {
   status: "queued" | "running" | "succeeded" | "failed";
   attempts: number;
   payload: Record<string, unknown>;
+  workerNodeId?: string;
+  leaseExpiresAt?: string;
   createdAt: string;
+}
+
+export interface WorkerNode {
+  id: string;
+  name: string;
+  status: "ready" | "draining" | "offline";
+  privateAddress: string;
+  machineType: string;
+  capacityMemoryMb: number;
+  capacityCpuMillis: number;
+  systemReserveMemoryMb: number;
+  reservedMemoryMb: number;
+  reservedCpuMillis: number;
+  lastHeartbeatAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentJob extends ProvisioningJob {
+  applications: ApplicationInstance[];
+}
+
+export interface GatewayRoute {
+  hostname: string;
+  upstreamHost: string;
+  workerPrivateAddress: string;
+  workerNodeId: string;
 }
 
 export interface BackupRecord {

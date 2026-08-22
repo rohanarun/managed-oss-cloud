@@ -1,76 +1,61 @@
 import { execFile } from "node:child_process";
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { appendFile, open, readFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import pg from "pg";
-import type { ApplicationInstance, ProvisioningJob } from "../shared/types.js";
+import type { AgentJob, ApplicationInstance } from "../shared/types.js";
 import { buildRuntimeManifest, type RuntimeManifest } from "./app-manifests.js";
 import { config } from "./config.js";
 
 const execFileAsync = promisify(execFile);
-const workerId = `docker-${process.pid}`;
 const memoryReserveBytes = 160 * 1024 * 1024;
 
-interface ClaimedJob extends ProvisioningJob {
-  applications: ApplicationInstance[];
+interface WorkerReport {
+  status: "succeeded" | "failed";
+  error?: string;
+  applications?: Array<{ id: string; state: ApplicationInstance["state"]; healthy?: boolean }>;
+  backups?: Array<{ applicationInstanceId: string; objectName: string; sizeBytes: number }>;
 }
 
-class WorkerDatabase {
-  private readonly pool: pg.Pool;
+class AgentClient {
+  private token = "";
+  private readonly baseUrl: string;
 
-  constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, ssl: config.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : false });
+  constructor() {
+    if (!config.CONTROL_PLANE_AGENT_URL) throw new Error("Remote worker requires CONTROL_PLANE_AGENT_URL.");
+    this.baseUrl = config.CONTROL_PLANE_AGENT_URL.replace(/\/$/, "");
   }
 
-  async recoverStaleJobs() {
-    await this.pool.query("UPDATE provisioning_jobs SET status='queued',locked_at=NULL,locked_by=NULL,available_at=NOW(),updated_at=NOW() WHERE status='running' AND locked_at<NOW()-INTERVAL '15 minutes' AND attempts<3");
+  private async request<T>(pathname: string, init: RequestInit = {}, token = this.token): Promise<T | undefined> {
+    const response = await fetch(`${this.baseUrl}${pathname}`, { ...init, headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...init.headers } });
+    if (response.status === 204) return undefined;
+    if (!response.ok) throw new Error(`Control plane ${pathname} failed with ${response.status}: ${(await response.text()).slice(0, 500)}`);
+    return await response.json() as T;
   }
 
-  async claim(): Promise<ClaimedJob | undefined> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const result = await client.query("SELECT * FROM provisioning_jobs WHERE status='queued' AND available_at<=NOW() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1");
-      const row = result.rows[0];
-      if (!row) { await client.query("COMMIT"); return undefined; }
-      await client.query("UPDATE provisioning_jobs SET status='running',attempts=attempts+1,locked_at=NOW(),locked_by=$1,updated_at=NOW() WHERE id=$2", [workerId, row.id]);
-      const applications = await client.query("SELECT * FROM application_instances WHERE installation_id=$1 ORDER BY created_at", [row.installation_id]);
-      await client.query("COMMIT");
-      return {
-        id: String(row.id), installationId: String(row.installation_id), action: row.action, status: "running", attempts: Number(row.attempts) + 1, payload: row.payload ?? {}, createdAt: new Date(String(row.created_at)).toISOString(),
-        applications: applications.rows.map((app) => ({ id: String(app.id), installationId: String(app.installation_id), appId: String(app.app_id), state: app.state, hostname: String(app.hostname), containerProject: String(app.container_project), customDomains: [], lastHealthAt: app.last_health_at ? new Date(String(app.last_health_at)).toISOString() : undefined, createdAt: new Date(String(app.created_at)).toISOString(), updatedAt: new Date(String(app.updated_at)).toISOString() })),
-      };
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
+  async initialize() {
+    this.token = (await readFile(config.WORKER_AGENT_TOKEN_FILE, "utf8").catch(() => "")).trim();
+    if (!this.token) {
+      if (!config.WORKER_BOOTSTRAP_TOKEN || !config.WORKER_NODE_ID || !config.WORKER_NODE_NAME || !config.WORKER_PRIVATE_ADDRESS || !config.WORKER_MACHINE_TYPE || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS) throw new Error("Remote worker registration settings are incomplete.");
+      const registered = await this.request<{ agentToken: string }>("/api/agent/register", { method: "POST", body: JSON.stringify({ id: config.WORKER_NODE_ID, name: config.WORKER_NODE_NAME, privateAddress: config.WORKER_PRIVATE_ADDRESS, machineType: config.WORKER_MACHINE_TYPE, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB }) }, config.WORKER_BOOTSTRAP_TOKEN);
+      if (!registered?.agentToken) throw new Error("Control plane did not return a worker token.");
+      this.token = registered.agentToken;
+      await mkdir(path.dirname(config.WORKER_AGENT_TOKEN_FILE), { recursive: true, mode: 0o700 });
+      await writeFile(config.WORKER_AGENT_TOKEN_FILE, `${this.token}\n`, { mode: 0o600 });
     }
+    await this.heartbeat();
   }
 
-  async setInstallationState(id: string, state: string, failureReason?: string) { await this.pool.query("UPDATE installations SET state=$1,failure_reason=$2,updated_at=NOW() WHERE id=$3", [state, failureReason ?? null, id]); }
-  async setApplicationState(id: string, state: string, healthy = false) { await this.pool.query("UPDATE application_instances SET state=$1,last_health_at=CASE WHEN $2 THEN NOW() ELSE last_health_at END,updated_at=NOW() WHERE id=$3", [state, healthy, id]); }
-  async complete(id: string) { await this.pool.query("UPDATE provisioning_jobs SET status='succeeded',locked_at=NULL,locked_by=NULL,last_error=NULL,updated_at=NOW() WHERE id=$1", [id]); }
-  async fail(job: ClaimedJob, message: string) {
-    if (job.attempts < 3) {
-      await this.pool.query("UPDATE provisioning_jobs SET status='queued',available_at=NOW()+($1*INTERVAL '1 minute'),locked_at=NULL,locked_by=NULL,last_error=$2,updated_at=NOW() WHERE id=$3", [job.attempts, message, job.id]);
-    } else {
-      await this.pool.query("UPDATE provisioning_jobs SET status='failed',locked_at=NULL,locked_by=NULL,last_error=$1,updated_at=NOW() WHERE id=$2", [message, job.id]);
-      await this.setInstallationState(job.installationId, "failed", message);
-      for (const application of job.applications) await this.setApplicationState(application.id, "failed");
-    }
+  async heartbeat() {
+    if (!config.WORKER_PRIVATE_ADDRESS || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS) throw new Error("Worker capacity settings are incomplete.");
+    await this.request("/api/agent/heartbeat", { method: "POST", body: JSON.stringify({ privateAddress: config.WORKER_PRIVATE_ADDRESS, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS }) });
   }
 
-  async routes() {
-    const result = await this.pool.query("SELECT a.id,a.hostname,a.container_project,a.app_id,COALESCE(array_agg(d.domain) FILTER (WHERE d.verification_status IN ('verified','active')), '{}') domains FROM application_instances a LEFT JOIN custom_domains d ON d.application_instance_id=a.id WHERE a.state='live' GROUP BY a.id ORDER BY a.hostname");
-    return result.rows as Array<{ id: string; hostname: string; container_project: string; app_id: string; domains: string[] }>;
-  }
-
-  async activateVerifiedDomains() { await this.pool.query("UPDATE custom_domains SET verification_status='active',last_checked_at=NOW() WHERE verification_status='verified'"); }
-  async recordBackup(installationId: string, applicationInstanceId: string, objectName: string, sizeBytes: number) { await this.pool.query("INSERT INTO backups(id,installation_id,application_instance_id,object_name,size_bytes,status) VALUES($1,$2,$3,$4,$5,'ready')", [randomUUID(), installationId, applicationInstanceId, objectName, sizeBytes]); }
+  async claim() { return (await this.request<{ job: AgentJob }>("/api/agent/jobs/claim", { method: "POST", body: "{}" }))?.job; }
+  async report(jobId: string, report: WorkerReport) { await this.request(`/api/agent/jobs/${jobId}/report`, { method: "POST", body: JSON.stringify(report) }); }
+  async routes() { return (await this.request<{ routes: Array<{ hostname: string; containerProject: string; appId: string }> }>("/api/agent/routes"))?.routes ?? []; }
 }
 
 function workspacePath(instance: ApplicationInstance) {
@@ -115,19 +100,15 @@ async function writeCompose(instance: ApplicationInstance, manifest: RuntimeMani
   return composePath;
 }
 
-async function reloadRoutes(database: WorkerDatabase) {
-  const routes = await database.routes();
-  const manifests = new Map<string, RuntimeManifest>();
+async function reloadRoutes(agent: AgentClient) {
+  const routes = await agent.routes();
   const blocks = routes.map((route) => {
-    const instance: ApplicationInstance = { id: route.id, installationId: "", appId: route.app_id, state: "live", hostname: route.hostname, containerProject: route.container_project, customDomains: [], createdAt: "", updatedAt: "" };
+    const instance: ApplicationInstance = { id: "00000000-0000-0000-0000-000000000000", installationId: "", appId: route.appId, state: "live", hostname: route.hostname, containerProject: route.containerProject, customDomains: [], memoryReservationMb: 0, cpuReservationMillis: 0, createdAt: "", updatedAt: "" };
     const manifest = buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK });
-    manifests.set(route.id, manifest);
-    const hostnames = [route.hostname, ...(route.domains ?? [])].join(", ");
-    return `${hostnames} {\n  encode zstd gzip\n  reverse_proxy ${manifest.primaryContainer}:${manifest.internalPort}\n}`;
+    return `http://${route.hostname}:8080 {\n  encode zstd gzip\n  reverse_proxy ${manifest.primaryContainer}:${manifest.internalPort}\n}`;
   });
   await writeFile(config.HOST_CADDY_CONFIG, `${blocks.join("\n\n")}\n`, { mode: 0o640 });
   await docker(["exec", config.PLATFORM_CADDY_CONTAINER, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"]);
-  await database.activateVerifiedDomains();
 }
 
 async function metadataAccessToken() {
@@ -188,7 +169,8 @@ async function prepareDatabaseDump(instance: ApplicationInstance, directory: str
   await writeFile(path.join(backupDirectory, "database.dump"), dump.stdout, { mode: 0o600 });
 }
 
-async function backup(job: ClaimedJob, database: WorkerDatabase) {
+async function backup(job: AgentJob) {
+  const backups: NonNullable<WorkerReport["backups"]> = [];
   for (const instance of job.applications) {
     const directory = workspacePath(instance);
     const composePath = path.join(directory, "compose.json");
@@ -200,9 +182,10 @@ async function backup(job: ClaimedJob, database: WorkerDatabase) {
       await prepareDatabaseDump(instance, directory);
       await execFileAsync("tar", ["-czf", archivePath, "--exclude=./database", "-C", directory, "."], { timeout: 30 * 60_000, maxBuffer: 1024 * 1024 });
       await encryptArchive(archivePath, encryptedPath);
-      const objectName = `${job.installationId}/${instance.id}/${new Date().toISOString().replaceAll(":", "-")}.tar.gz.enc`;
+      if (!config.WORKER_NODE_ID) throw new Error("Backup identity is unavailable.");
+      const objectName = `${config.WORKER_NODE_ID}/${job.installationId}/${instance.id}/${new Date().toISOString().replaceAll(":", "-")}.tar.gz.enc`;
       await uploadBackup(encryptedPath, objectName);
-      await database.recordBackup(job.installationId, instance.id, objectName, (await stat(encryptedPath)).size);
+      backups.push({ applicationInstanceId: instance.id, objectName, sizeBytes: (await stat(encryptedPath)).size });
     } finally {
       if (stopped) await docker(["compose", "-f", composePath, "start"]).catch(() => undefined);
       await rm(archivePath, { force: true });
@@ -210,13 +193,14 @@ async function backup(job: ClaimedJob, database: WorkerDatabase) {
       await rm(path.join(directory, ".managed-backup"), { recursive: true, force: true });
     }
   }
+  return backups;
 }
 
-async function restore(job: ClaimedJob, database: WorkerDatabase) {
+async function restore(job: AgentJob, agent: AgentClient) {
   const objectName = typeof job.payload.objectName === "string" ? job.payload.objectName : "";
   const instanceId = typeof job.payload.applicationInstanceId === "string" ? job.payload.applicationInstanceId : "";
   const instance = job.applications.find((candidate) => candidate.id === instanceId);
-  if (!instance || !objectName.startsWith(`${job.installationId}/${instance.id}/`) || !objectName.endsWith(".tar.gz.enc")) throw new Error("Restore target is outside this managed application.");
+  if (!config.WORKER_NODE_ID || !instance || !objectName.startsWith(`${config.WORKER_NODE_ID}/${job.installationId}/${instance.id}/`) || !objectName.endsWith(".tar.gz.enc")) throw new Error("Restore target is outside this managed application.");
   const directory = workspacePath(instance);
   const encryptedPath = `/tmp/managed-oss-restore-${job.id}.enc`;
   const archivePath = `/tmp/managed-oss-restore-${job.id}.tar.gz`;
@@ -235,8 +219,7 @@ async function restore(job: ClaimedJob, database: WorkerDatabase) {
       await docker(["exec", `${instance.containerProject}-db`, "pg_restore", "-U", user, "-d", user, "--clean", "--if-exists", "/tmp/database.dump"]);
     }
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
-    await database.setApplicationState(instance.id, "live", true);
-    await reloadRoutes(database);
+    await reloadRoutes(agent);
   } finally {
     await rm(encryptedPath, { force: true });
     await rm(archivePath, { force: true });
@@ -244,23 +227,19 @@ async function restore(job: ClaimedJob, database: WorkerDatabase) {
   }
 }
 
-async function install(job: ClaimedJob, database: WorkerDatabase) {
+async function install(job: AgentJob, agent: AgentClient) {
   const manifests = job.applications.map((instance) => buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK }));
   await assertCapacity(manifests);
-  await database.setInstallationState(job.installationId, "provisioning");
   for (let index = 0; index < job.applications.length; index += 1) {
     const instance = job.applications[index];
     const manifest = manifests[index];
-    await database.setApplicationState(instance.id, "provisioning");
     const composePath = await writeCompose(instance, manifest);
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
-    await database.setApplicationState(instance.id, "live", true);
   }
-  await reloadRoutes(database);
-  await database.setInstallationState(job.installationId, "live");
+  await reloadRoutes(agent);
 }
 
-async function changeLifecycle(job: ClaimedJob, database: WorkerDatabase) {
+async function changeLifecycle(job: AgentJob, agent: AgentClient) {
   for (const instance of job.applications) {
     const composePath = path.join(workspacePath(instance), "compose.json");
     if (job.action === "upgrade") await docker(["compose", "-f", composePath, "pull"]);
@@ -270,32 +249,33 @@ async function changeLifecycle(job: ClaimedJob, database: WorkerDatabase) {
       await docker(["compose", "-f", composePath, "down", "--remove-orphans"]);
       await rm(workspacePath(instance), { recursive: true, force: true });
     }
-    await database.setApplicationState(instance.id, job.action === "stop" || job.action === "uninstall" ? "stopped" : "live", job.action !== "stop" && job.action !== "uninstall");
   }
-  await database.setInstallationState(job.installationId, job.action === "stop" || job.action === "uninstall" ? "planned" : "live");
-  await reloadRoutes(database);
+  await reloadRoutes(agent);
 }
 
 async function run() {
-  if (config.PROVISIONING_WORKER !== "docker") throw new Error("Provisioning worker refused to start unless PROVISIONING_WORKER=docker.");
-  if (!config.DATABASE_URL) throw new Error("Provisioning worker requires PostgreSQL.");
-  const database = new WorkerDatabase(config.DATABASE_URL);
-  await database.recoverStaleJobs();
-  process.stdout.write(`Provisioning worker ${workerId} ready\n`);
+  if (config.PROVISIONING_WORKER !== "remote") throw new Error("Provisioning worker refused to start unless PROVISIONING_WORKER=remote.");
+  const agent = new AgentClient();
+  await agent.initialize();
+  process.stdout.write(`Provisioning worker ${config.WORKER_NODE_ID} ready\n`);
+  setInterval(() => { void agent.heartbeat().catch((error) => process.stderr.write(`${error instanceof Error ? error.message : "Worker heartbeat failed."}\n`)); }, 30_000);
   while (true) {
-    const job = await database.claim();
+    const job = await agent.claim();
     if (!job) { await new Promise((resolve) => setTimeout(resolve, config.PROVISIONING_POLL_MILLISECONDS)); continue; }
     try {
-      if (job.action === "install") await install(job, database);
-      else if (["upgrade", "stop", "start", "uninstall"].includes(job.action)) await changeLifecycle(job, database);
-      else if (job.action === "reload-routes") await reloadRoutes(database);
-      else if (job.action === "backup") await backup(job, database);
-      else if (job.action === "restore") await restore(job, database);
+      let backups: WorkerReport["backups"];
+      if (job.action === "install") await install(job, agent);
+      else if (["upgrade", "stop", "start", "uninstall"].includes(job.action)) await changeLifecycle(job, agent);
+      else if (job.action === "reload-routes") await reloadRoutes(agent);
+      else if (job.action === "backup") backups = await backup(job);
+      else if (job.action === "restore") await restore(job, agent);
       else throw new Error(`Worker action ${job.action} is not enabled yet.`);
-      await database.complete(job.id);
+      const applicationState = job.action === "stop" || job.action === "uninstall" ? "stopped" : "live";
+      await agent.report(job.id, { status: "succeeded", backups, applications: job.applications.map((application) => ({ id: application.id, state: applicationState, healthy: applicationState === "live" })) });
+      await reloadRoutes(agent);
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 1_000) : "Unknown provisioning failure";
-      await database.fail(job, message);
+      await agent.report(job.id, { status: "failed", error: message, applications: job.applications.map((application) => ({ id: application.id, state: "failed" })) });
     }
   }
 }

@@ -41,24 +41,28 @@ services:
     expose:
       - "8787"
 
-  provisioning-worker:
+  gateway-reconciler:
     image: ${CONTROL_PLANE_IMAGE}
     restart: unless-stopped
-    command: ["npm", "run", "worker"]
+    command: ["npm", "run", "gateway"]
     depends_on:
-      database:
-        condition: service_healthy
-    env_file:
-      - runtime.env
-      - worker.env
+      - control-plane
+      - caddy
     environment:
-      DATABASE_URL: postgresql://opendock:${POSTGRES_PASSWORD}@database:5432/opendock
-      DATABASE_SSL: "false"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /opt/managed-oss/apps:/opt/managed-oss/apps
-      - /opt/managed-oss/config:/opt/managed-oss/config
-    profiles: ["worker"]
+      GATEWAY_RECONCILER_TOKEN: ${GATEWAY_RECONCILER_TOKEN}
+      GATEWAY_CONTROL_PLANE_URL: http://control-plane:8787
+      CADDY_ADMIN_URL: http://caddy:2019/load
+      CONTROL_PLANE_DOMAIN: ${CONTROL_PLANE_DOMAIN}
+      CONTROL_PLANE_UPSTREAM: control-plane:8787
+      PLATFORM_IPV4: ${PLATFORM_IPV4}
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   caddy:
     image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
@@ -71,6 +75,5 @@ services:
       - "443:443"
     volumes:
       - /opt/managed-oss/config/Caddyfile:/etc/caddy/Caddyfile:ro
-      - /opt/managed-oss/config/apps.caddy:/etc/caddy/apps.caddy:ro
       - /opt/managed-oss/apps/caddy-data:/data
       - /opt/managed-oss/apps/caddy-config:/config

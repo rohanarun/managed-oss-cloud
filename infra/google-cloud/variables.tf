@@ -27,9 +27,49 @@ variable "instance_name" {
 }
 
 variable "machine_type" {
-  description = "Machine type. Start with e2-micro and upgrade when capacity requires it."
+  description = "Control-plane machine type. Customer applications run on separate worker nodes."
   type        = string
-  default     = "e2-micro"
+  default     = "e2-medium"
+}
+
+variable "worker_count" {
+  description = "Number of private application worker nodes. Increase horizontally as reserved capacity fills."
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.worker_count >= 0 && var.worker_count <= 100
+    error_message = "Worker count must be between 0 and 100."
+  }
+}
+
+variable "worker_machine_type" {
+  description = "Machine type for each private application worker."
+  type        = string
+  default     = "e2-standard-2"
+}
+
+variable "worker_disk_size_gb" {
+  description = "Persistent boot disk size for each stateful application worker."
+  type        = number
+  default     = 40
+}
+
+variable "worker_capacity_memory_mb" {
+  description = "Schedulable memory advertised by each worker. Keep below physical RAM."
+  type        = number
+  default     = 7168
+}
+
+variable "worker_capacity_cpu_millis" {
+  description = "Schedulable CPU advertised by each worker."
+  type        = number
+  default     = 1800
+}
+
+variable "worker_system_reserve_memory_mb" {
+  description = "Memory withheld from tenant scheduling for the OS, Docker, Caddy, and agent."
+  type        = number
+  default     = 768
 }
 
 variable "disk_size_gb" {
@@ -72,12 +112,12 @@ variable "provisioning_mode" {
 }
 
 variable "provisioning_worker" {
-  description = "Enable the isolated Docker worker only after production validation."
+  description = "Deprecated single-host worker switch retained for configuration compatibility. It must remain disabled."
   type        = string
   default     = "disabled"
   validation {
-    condition     = contains(["disabled", "docker"], var.provisioning_worker)
-    error_message = "Provisioning worker must be disabled or docker."
+    condition     = var.provisioning_worker == "disabled"
+    error_message = "The database-connected single-host worker was removed; provisioning_worker must be disabled."
   }
 }
 
@@ -119,4 +159,16 @@ variable "backup_key_secret_name" {
   description = "Existing Secret Manager secret containing a 32-byte hex backup key."
   type        = string
   default     = "managed-oss-backup-key"
+}
+
+variable "worker_bootstrap_secret_name" {
+  description = "Existing Secret Manager secret used once by private workers to obtain agent credentials."
+  type        = string
+  default     = "managed-oss-worker-bootstrap-token"
+}
+
+variable "gateway_reconciler_secret_name" {
+  description = "Existing Secret Manager secret authenticating the ingress route reconciler."
+  type        = string
+  default     = "managed-oss-gateway-reconciler-token"
 }

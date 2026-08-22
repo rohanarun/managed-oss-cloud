@@ -1,0 +1,10 @@
+{
+  admin 0.0.0.0:2019
+  auto_https off
+}
+
+:8080 {
+  respond "Route unavailable" 404
+}
+
+import /etc/caddy/apps.caddy
