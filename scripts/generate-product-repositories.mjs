@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { suiteModules } from "../src/shared/suite.ts";
 import {
+  suiteActionExampleInput,
+  suiteActionInputJsonSchema,
   suiteActionRequiredScope,
   suiteActionsByModule,
   suiteActionToolName,
@@ -12,10 +14,10 @@ import {
 const generatorDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(generatorDirectory, "..");
 const defaultOutputRoot = "/Volumes/SP AI 01_16/managed-oss-product-repos";
-const sourceRelease = "v0.4.0";
-const sourceCommit = "4ff94afc860109e683c56c3acffedb8a6c233e03";
-const sourceSnapshotSha256 = "df03dff119034858ec0a25b1171226ff3539d015318c15b5a2359eab49118dcf";
-const generatedVersion = "0.1.0";
+const sourceRelease = "v0.4.2";
+const sourceCommit = "20c4a704c77cbbbff1da995e1d91b937625a8aa4";
+const sourceSnapshotSha256 = "d0b7b1079d4924eb7369c788a979a707d45bb63470290e6ac33ee5662d78f69f";
+const generatedVersion = "0.1.1";
 
 const products = [
   { slug: "pulseflow", command: "pulseflow", moduleId: "automate", name: "PulseFlow", tagline: "Governed automations with typed triggers, approvals, retries, and explainable AI repair.", accent: "#16d9b3", accentDark: "#087f6d" },
@@ -34,6 +36,27 @@ const products = [
   { slug: "threadline", command: "threadline", moduleId: "channels", name: "Threadline", tagline: "Topic-first team communication with preview gates, redaction evidence, summaries, and digests.", accent: "#c28bff", accentDark: "#7345a8" },
   { slug: "ledgerline-operations", command: "ledgerline-operations", moduleId: "operations", name: "Ledgerline Operations", tagline: "Orders, invoices, journal previews, payments, and explainable operating variance in one ledger.", accent: "#fb8c75", accentDark: "#9e4230" },
   { slug: "evident-ai-workbench", command: "evident-ai-workbench", moduleId: "assistant", name: "Evident AI Workbench", tagline: "Versioned prompts, source-bound runs, governed agents, and durable AI result evidence.", accent: "#73d2ff", accentDark: "#246e91" },
+  { slug: "consentledger", command: "consentledger", moduleId: "consent", name: "ConsentLedger", tagline: "Versioned privacy policies, cryptographic receipts, bounded scans, and cited consent explanations.", accent: "#5ee0b7", accentDark: "#197458" },
+  { slug: "searchproof", command: "searchproof", moduleId: "seo", name: "SearchProof", tagline: "Authorized rank evidence, safe site audits, and citation-grounded content briefs without invented metrics.", accent: "#6cb6ff", accentDark: "#285f9f" },
+  { slug: "workledger", command: "workledger", moduleId: "finance", name: "WorkLedger", tagline: "Time entries, integer-money invoices, payment facts, and cited reconciliation proposals for independent businesses.", accent: "#71d586", accentDark: "#2c7740" },
+  { slug: "signalmesh", command: "signalmesh", moduleId: "notify", name: "SignalMesh", tagline: "Typed product events, preference-aware delivery, exact workflows, and explainable suppression evidence.", accent: "#ff9a68", accentDark: "#a94f29" },
+  { slug: "talentledger", command: "talentledger", moduleId: "hire", name: "TalentLedger", tagline: "Versioned jobs, structured applications, candidate rights, and review-only AI summaries without automated hiring decisions.", accent: "#b493ff", accentDark: "#6543a8" },
+  { slug: "canvasforge", command: "canvasforge", moduleId: "collab", name: "CanvasForge", tagline: "Structured collaborative documents with immutable revisions, controlled sharing, and approval-gated AI patches.", accent: "#55d4e8", accentDark: "#177789" },
+  { slug: "slotline", command: "slotline", moduleId: "schedule", name: "Slotline", tagline: "Conflict-aware availability, deterministic routing, bookings, and cited calendar reconciliation.", accent: "#ffc75c", accentDark: "#8d6715" },
+  { slug: "intakeforge", command: "intakeforge", moduleId: "forms", name: "IntakeForge", tagline: "Accessible versioned forms with deterministic logic, privacy controls, corrections, and grounded summaries.", accent: "#ef84b4", accentDark: "#98436b" },
+  { slug: "releaseguard", command: "releaseguard", moduleId: "flags", name: "ReleaseGuard", tagline: "Typed feature flags, signed manifests, approval-gated rollouts, and quality-evidenced experiments.", accent: "#8da3ff", accentDark: "#4a5daf" },
+  { slug: "accordseal", command: "accordseal", moduleId: "esign", name: "AccordSeal", tagline: "Content-addressed agreements, signer workflows, approvals, private completion evidence, and cited clause proposals.", accent: "#f0ae6f", accentDark: "#945822" },
+  { slug: "letterline", command: "letterline", moduleId: "email", name: "Letterline", tagline: "Purpose-bound audiences, consent evidence, reviewed campaigns, and provider-neutral dispatch plans.", accent: "#70cfef", accentDark: "#26728a" },
+  { slug: "schemadeck", command: "schemadeck", moduleId: "tables", name: "SchemaDeck", tagline: "Governed schemas, typed rows, deterministic views, and cited proposals in one shared data fabric.", accent: "#62d6ba", accentDark: "#1c7863" },
+  { slug: "recall-room", command: "recall-room", moduleId: "meetings", name: "Recall Room", tagline: "Privacy-aware meeting evidence, decisions, owners, commitments, and reviewed follow-up proposals.", accent: "#aa96ff", accentDark: "#5f4aaf" },
+  { slug: "proofline-insights", command: "proofline-insights", moduleId: "insights", name: "Proofline Insights", tagline: "Metrics, observations, dashboards, and immutable reporting clocks with cited explanations.", accent: "#62b8ff", accentDark: "#28649c" },
+  { slug: "learning-forge", command: "learning-forge", moduleId: "learning", name: "Learning Forge", tagline: "Evidence-bound lessons, attempts, rubrics, reviewed feedback, and durable credentials.", accent: "#f4bf57", accentDark: "#8f6714" },
+  { slug: "circlefield", command: "circlefield", moduleId: "community", name: "Circlefield", tagline: "Portable community context, memberships, moderation receipts, and reviewed announcements.", accent: "#eb82b6", accentDark: "#963f6a" },
+  { slug: "gatherledger", command: "gatherledger", moduleId: "events", name: "GatherLedger", tagline: "Auditable event releases, ticket inventory, money receipts, access records, and attendee proposals.", accent: "#ff916c", accentDark: "#a8492e" },
+  { slug: "peopleweave", command: "peopleweave", moduleId: "people", name: "PeopleWeave", tagline: "Policies, onboarding, leave, attendance, reviews, and offboarding without automated employment decisions.", accent: "#8ddc8b", accentDark: "#387a38" },
+  { slug: "meterproof", command: "meterproof", moduleId: "metering", name: "MeterProof", tagline: "Reproducible usage events, aggregates, charge previews, credits, invoices, and payment evidence.", accent: "#6ec7e8", accentDark: "#2b748e" },
+  { slug: "assuregraph", command: "assuregraph", moduleId: "assurance", name: "AssureGraph", tagline: "Risks, controls, evidence, tests, remediations, exceptions, and audit packs bound to exact owners and clocks.", accent: "#f19d72", accentDark: "#964d2b" },
+  { slug: "liveforum", command: "liveforum", moduleId: "live", name: "LiveForum", tagline: "Consent-pinned live sessions, access grants, attributed chat, moderation receipts, and reviewed replay proposals.", accent: "#d38cff", accentDark: "#7c44a0" },
 ];
 
 function flag(name) {
@@ -158,15 +181,19 @@ function productManifest(product, module, actions) {
       statement: "Original clean-room implementation of the " + module.category.toLowerCase() + " software category, designed and written independently.",
       sourceBoundary: "Public category behavior informed requirements; implementation and product identity are original.",
     },
-    actions: actions.map((action) => ({
-      ...action,
-      inputSchema: action.inputSchema,
-      requiredScope: suiteActionRequiredScope(action),
-      backendMcpToolName: suiteActionToolName(action),
-      productMcpToolName: mcpPrefix + "_" + action.id.replaceAll("-", "_"),
-      productCliExample: product.command + " action " + action.id + " '" + JSON.stringify(action.exampleInput ?? sampleForSchema(action.inputSchema)) + "'",
-      exampleInput: action.exampleInput ?? sampleForSchema(action.inputSchema),
-    })),
+    actions: actions.map((action) => {
+      const inputSchema = suiteActionInputJsonSchema(action);
+      const exampleInput = action.exampleInput ?? suiteActionExampleInput(action) ?? sampleForSchema(inputSchema);
+      return {
+        ...action,
+        inputSchema,
+        requiredScope: suiteActionRequiredScope(action),
+        backendMcpToolName: suiteActionToolName(action),
+        productMcpToolName: mcpPrefix + "_" + action.id.replaceAll("-", "_"),
+        productCliExample: product.command + " action " + action.id + " '" + JSON.stringify(exampleInput) + "'",
+        exampleInput,
+      };
+    }),
   };
 }
 
@@ -202,6 +229,19 @@ function isPlainObject(value) {
 
 function fail(path, message) {
   throw new InputValidationError(path + " " + message);
+}
+
+function sameJsonValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length && left.every((item, index) => sameJsonValue(item, right[index]));
+  }
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && sameJsonValue(left[key], right[key]));
 }
 
 function formatIsValid(format, value) {
@@ -242,12 +282,18 @@ export function validateInput(schema, value, path = "input") {
       break;
     case "object": {
       if (!isPlainObject(value)) fail(path, "must be an object.");
+      const keys = Object.keys(value);
+      if (schema.minProperties !== undefined && keys.length < schema.minProperties) fail(path, "must contain at least " + schema.minProperties + " propert" + (schema.minProperties === 1 ? "y." : "ies."));
+      if (schema.maxProperties !== undefined && keys.length > schema.maxProperties) fail(path, "must contain at most " + schema.maxProperties + " propert" + (schema.maxProperties === 1 ? "y." : "ies."));
       for (const key of schema.required ?? []) {
         if (!(key in value)) fail(path + "." + key, "is required.");
       }
-      if (schema.additionalProperties === false) {
-        const allowed = new Set(Object.keys(schema.properties ?? {}));
-        for (const key of Object.keys(value)) if (!allowed.has(key)) fail(path + "." + key, "is not permitted.");
+      const declared = new Set(Object.keys(schema.properties ?? {}));
+      for (const key of keys) {
+        if (schema.propertyNames) validateInput({ ...schema.propertyNames, type: "string" }, key, path + " property " + JSON.stringify(key));
+        if (declared.has(key)) continue;
+        if (schema.additionalProperties === false) fail(path + "." + key, "is not permitted.");
+        if (isPlainObject(schema.additionalProperties)) validateInput(schema.additionalProperties, value[key], path + "." + key);
       }
       for (const [key, child] of Object.entries(schema.properties ?? {})) {
         if (key in value) validateInput(child, value[key], path + "." + key);
@@ -258,6 +304,11 @@ export function validateInput(schema, value, path = "input") {
       if (!Array.isArray(value)) fail(path, "must be an array.");
       if (schema.minItems !== undefined && value.length < schema.minItems) fail(path, "must contain at least " + schema.minItems + " item(s).");
       if (schema.maxItems !== undefined && value.length > schema.maxItems) fail(path, "must contain at most " + schema.maxItems + " item(s).");
+      if (schema.uniqueItems === true) {
+        for (let index = 0; index < value.length; index += 1) {
+          if (value.slice(0, index).some((item) => sameJsonValue(item, value[index]))) fail(path + "[" + index + "]", "duplicates an earlier item but items must be unique.");
+        }
+      }
       if (schema.items) value.forEach((item, index) => validateInput(schema.items, item, path + "[" + index + "]"));
       break;
     case "string":
@@ -958,8 +1009,8 @@ import { manifest } from "../src/manifest.mjs";
 import { createFakeApi } from "./helpers/fake-api.mjs";
 
 test("manifest is pinned and every action is product scoped", () => {
-  assert.equal(manifest.release.backendRelease, "v0.4.0");
-  assert.equal(manifest.release.backendCommit, "4ff94afc860109e683c56c3acffedb8a6c233e03");
+  assert.equal(manifest.release.backendRelease, "${sourceRelease}");
+  assert.equal(manifest.release.backendCommit, "${sourceCommit}");
   assert.ok(manifest.actions.length > 0);
   assert.ok(manifest.actions.every((action) => action.moduleId === manifest.module.id));
   assert.equal(new Set(manifest.actions.map((action) => action.id)).size, manifest.actions.length);
@@ -982,6 +1033,41 @@ test("client uses bearer auth and cannot escape its fixed module", async (contex
   assert.ok(fake.requests.some((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/actions/" + action.id));
   assert.throws(() => client.runAction("not-a-product-action", {}), /Unknown/);
   assert.throws(() => client.runAction(action.id, {}), /required/);
+});
+`;
+
+const validationTestSource = String.raw`import assert from "node:assert/strict";
+import test from "node:test";
+import { validateInput } from "../src/validation.mjs";
+
+test("validator enforces unique arrays structurally", () => {
+  const schema = {
+    type: "array",
+    uniqueItems: true,
+    items: {
+      type: "object",
+      required: ["key"],
+      properties: { key: { type: "string" } },
+      additionalProperties: false,
+    },
+  };
+  validateInput(schema, [{ key: "first" }, { key: "second" }]);
+  assert.throws(() => validateInput(schema, [{ key: "duplicate" }, { key: "duplicate" }]), /must be unique/);
+});
+
+test("validator enforces dynamic object key, size, and value schemas", () => {
+  const schema = {
+    type: "object",
+    minProperties: 1,
+    maxProperties: 2,
+    propertyNames: { pattern: "^[a-z]+$" },
+    additionalProperties: { type: "integer", minimum: 0 },
+  };
+  validateInput(schema, { accepted: 1 });
+  assert.throws(() => validateInput(schema, {}), /at least 1 property/);
+  assert.throws(() => validateInput(schema, { first: 1, second: 2, third: 3 }), /at most 2 properties/);
+  assert.throws(() => validateInput(schema, { "Not-valid": 1 }), /required pattern/);
+  assert.throws(() => validateInput(schema, { accepted: "wrong" }), /must be an integer/);
 });
 `;
 
@@ -1124,9 +1210,9 @@ import { manifest } from "../src/manifest.mjs";
 import { validateInput } from "../src/validation.mjs";
 
 assert.equal(manifest.schemaVersion, 1);
-assert.equal(manifest.release.backendRelease, "v0.4.0");
-assert.equal(manifest.release.backendCommit, "4ff94afc860109e683c56c3acffedb8a6c233e03");
-assert.equal(manifest.release.backendSourceSnapshotSha256, "df03dff119034858ec0a25b1171226ff3539d015318c15b5a2359eab49118dcf");
+assert.equal(manifest.release.backendRelease, "${sourceRelease}");
+assert.equal(manifest.release.backendCommit, "${sourceCommit}");
+assert.equal(manifest.release.backendSourceSnapshotSha256, "${sourceSnapshotSha256}");
 assert.ok(manifest.actions.length > 0);
 assert.ok(manifest.actions.every((action) => action.moduleId === manifest.module.id));
 assert.equal(new Set(manifest.actions.map((action) => action.id)).size, manifest.actions.length);
@@ -1173,7 +1259,7 @@ ${product.name} is a focused, public MIT distribution for the \`${module.id}\` m
 This repository is runnable, but it is intentionally not a second database server. Authentication, workspace isolation, shared PostgreSQL storage, plan enforcement, AI execution, and audit records remain behind the managed-oss-cloud API. This product receives a scoped API token and cannot receive database credentials or run database migrations.
 
 - Hosted backend: \`https://cloud.getsupers.com\`
-- Self-hosted backend: any compatible managed-oss-cloud v0.4.0 deployment
+- Self-hosted backend: any compatible managed-oss-cloud ${sourceRelease} deployment
 - Hosted minimum plan: \`${module.minPlan}\`
 - Resource class: \`${module.resourceClass}\`
 - Pinned backend source: [${sourceRelease}](https://github.com/rohanarun/managed-oss-cloud/tree/${sourceRelease}) at \`${sourceCommit}\`
@@ -1335,7 +1421,7 @@ function packageJson(product) {
 }
 
 function dockerfile(product) {
-  return `FROM node:22-alpine
+  return `FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 
 WORKDIR /app
 COPY --chown=node:node package.json product-manifest.json LICENSE README.md SECURITY.md ./
@@ -1365,8 +1451,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: npm test
@@ -1380,7 +1466,10 @@ async function writeProductRepository(root, product, force) {
   if (!module) throw new Error("Unknown source module: " + product.moduleId);
   const actions = suiteActionsByModule.get(module.id) ?? [];
   if (actions.length === 0) throw new Error("No actions found for module: " + module.id);
-  if (actions.some((action) => !action.inputSchema || action.inputSchema.type !== "object")) throw new Error("Every generated action must have a typed object input schema: " + module.id);
+  if (actions.some((action) => {
+    const schema = suiteActionInputJsonSchema(action);
+    return schema.type !== "object" || schema.additionalProperties !== false;
+  })) throw new Error("Every generated action must have a closed typed object input schema: " + module.id);
   const target = join(root, product.slug);
   if (await exists(target)) {
     if (!force) throw new Error(target + " already exists. Pass --force to replace only this known product directory.");
@@ -1425,6 +1514,7 @@ async function writeProductRepository(root, product, force) {
     ["test/cli.test.mjs", cliTestSource],
     ["test/helpers/fake-api.mjs", fakeApiSource],
     ["test/mcp.test.mjs", mcpTestSource],
+    ["test/validation.test.mjs", validationTestSource],
     ["test/web.test.mjs", webTestSource],
     ["web/app.js", webAppSource],
     ["web/index.html", render(indexTemplate, substitutions)],
@@ -1441,9 +1531,9 @@ async function writeProductRepository(root, product, force) {
 
 async function main() {
   const packageMetadata = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
-  if (packageMetadata.version !== "0.4.0") throw new Error("This generator is pinned to managed-oss-cloud v0.4.0.");
-  if (products.length !== 16 || new Set(products.map((product) => product.moduleId)).size !== 16 || new Set(products.map((product) => product.slug)).size !== 16) {
-    throw new Error("The product registry must contain exactly 16 unique products and modules.");
+  if (packageMetadata.version !== "0.4.0") throw new Error("This generator requires managed-oss-cloud package metadata version 0.4.0.");
+  if (products.length !== 37 || new Set(products.map((product) => product.moduleId)).size !== 37 || new Set(products.map((product) => product.slug)).size !== 37) {
+    throw new Error("The product registry must contain exactly 37 unique products and modules.");
   }
   const sourceSnapshot = products.map((product) => ({
     module: suiteModules.find((module) => module.id === product.moduleId),
@@ -1451,12 +1541,18 @@ async function main() {
   }));
   const actualSourceSnapshotSha256 = createHash("sha256").update(JSON.stringify(sourceSnapshot)).digest("hex");
   if (actualSourceSnapshotSha256 !== sourceSnapshotSha256) {
-    throw new Error("The 16-module source snapshot no longer matches managed-oss-cloud v0.4.0. Refuse to mislabel generated manifests.");
+    throw new Error("The 37-module source snapshot no longer matches managed-oss-cloud " + sourceRelease + ". Refuse to mislabel generated manifests.");
   }
+  const only = argumentValue("--only");
+  const requestedSlugs = only ? [...new Set(only.split(",").map((slug) => slug.trim()).filter(Boolean))] : products.map((product) => product.slug);
+  const unknownSlugs = requestedSlugs.filter((slug) => !products.some((product) => product.slug === slug));
+  if (unknownSlugs.length > 0) throw new Error("Unknown product slug(s): " + unknownSlugs.join(", ") + ".");
+  if (requestedSlugs.length === 0) throw new Error("--only must include at least one product slug.");
+  const selectedProducts = requestedSlugs.map((slug) => products.find((product) => product.slug === slug));
   const outputRoot = resolve(argumentValue("--output") ?? process.env.MANAGED_OSS_PRODUCT_OUTPUT ?? defaultOutputRoot);
   await mkdir(outputRoot, { recursive: true });
   const results = [];
-  for (const product of products) results.push(await writeProductRepository(outputRoot, product, flag("--force")));
+  for (const product of selectedProducts) results.push(await writeProductRepository(outputRoot, product, flag("--force")));
   process.stdout.write(json({ outputRoot, sourceRelease, sourceCommit, sourceSnapshotSha256, products: results, totalActions: results.reduce((sum, product) => sum + product.actions, 0) }));
 }
 

@@ -8,13 +8,14 @@ Managed OSS Cloud is an MIT-licensed control plane and an original AI-native bus
 
 The source registry in this checkout contains **37 first-party modules, 407 typed actions, and 447 MCP tools**. The MCP total is generated as three suite-level tools, one read-only list tool for each module, and one separately named tool for every typed action. Generic create/update/AI bypass tools are intentionally absent.
 
-The hosted control plane is running the exact digest-pinned v0.4.0 release, while the private provisioning worker runs the provenance-verified v0.4.1 network-reconciliation hotfix. Live checks on 2026-08-24 proved:
+The hosted control plane is running the provenance-verified, digest-pinned v0.4.2 release, while the private provisioning worker runs the independent v0.4.1 network-reconciliation hotfix. Live checks on 2026-08-24 proved:
 
 - `GET https://cloud.getsupers.com/api/health` reports PostgreSQL persistence with `mode: "dry-run"`;
 - `GET https://cloud.getsupers.com/api/config` reports `billingReady: false` and the $7/$50/$200 plan catalogue;
 - `GET https://cloud.getsupers.com/api/suite/catalog` returns all 37 first-party modules as JSON; and
-- `GET https://cloud.getsupers.com/api/suite/actions` returns all 407 uniquely named typed actions;
-- all 16 independent product CLIs and MCP servers authenticate against the same live workspace; and
+- `GET https://cloud.getsupers.com/api/suite/actions` returns all 407 uniquely named typed actions with closed root schemas;
+- all 37 independent product CLIs and MCP servers authenticate against the same live workspace;
+- the temporary live-acceptance token was revoked and subsequently rejected with HTTP 401; and
 - a controlled private-worker reboot restored the exact v0.4.1 image, metadata firewall proof, fresh heartbeat, HeyForm route, and four healthy Uptime Kuma routes without public worker ingress or ephemeral disks.
 
 The managed suite and account control plane are therefore live, but customer charging and one-click provisioning remain deliberately disabled. The hosted deployment preserves `PROVISIONING_MODE=dry-run`, `BILLING_MODE=disabled`, measurement-only storage accounting, and disabled subscription reconciliation. Those gates must not be presented as production-ready billing or provisioning until hard storage quotas, paid-capacity compensation, provider adapters, and the remaining live acceptance work pass.
@@ -45,7 +46,7 @@ The production data path uses PostgreSQL. Local development without `DATABASE_UR
 
 These are clean, original implementations. Product names in the second column are category references only. The first-party modules do not claim API or UI compatibility and do not contain source code, branding, UI assets, or copy from those products.
 
-Sixteen requested product distributions also have independent public MIT repositories. Each repository owns a product-specific web interface, scoped HTTP client, CLI, stdio MCP server, Dockerfile, tests, and a v0.1.0 release tag. They share tenant data only through this control plane's authenticated API; none contains database credentials or a competing migration owner.
+All 37 first-party product distributions also have independent public MIT repositories. Each repository owns a product-specific web interface, scoped HTTP client, CLI, stdio MCP server, digest-pinned Dockerfile, tests, and versioned release tags. Every repository has v0.1.0; the 21-product expansion also has the audited v0.1.1 validation release. They share tenant data only through this control plane's authenticated API; none contains database credentials or a competing migration owner.
 
 | Product repository | Product repository | Product repository | Product repository |
 | --- | --- | --- | --- |
@@ -53,6 +54,12 @@ Sixteen requested product distributions also have independent public MIT reposit
 | [Northstar Work](https://github.com/rohanarun/northstar-work) | [IdeaLoop](https://github.com/rohanarun/idealoop) | [AtlasBase](https://github.com/rohanarun/atlasbase) | [RouteKit](https://github.com/rohanarun/routekit) |
 | [FairLaunch](https://github.com/rohanarun/fairlaunch) | [ProofPort](https://github.com/rohanarun/proofport) | [BeaconPage](https://github.com/rohanarun/beaconpage) | [Northstar Planning](https://github.com/rohanarun/northstar-planning) |
 | [Harbor Vault](https://github.com/rohanarun/harbor-vault) | [Threadline](https://github.com/rohanarun/threadline) | [Ledgerline Operations](https://github.com/rohanarun/ledgerline-operations) | [Evident AI Workbench](https://github.com/rohanarun/evident-ai-workbench) |
+| [ConsentLedger](https://github.com/rohanarun/consentledger) | [SearchProof](https://github.com/rohanarun/searchproof) | [WorkLedger](https://github.com/rohanarun/workledger) | [SignalMesh](https://github.com/rohanarun/signalmesh) |
+| [TalentLedger](https://github.com/rohanarun/talentledger) | [CanvasForge](https://github.com/rohanarun/canvasforge) | [Slotline](https://github.com/rohanarun/slotline) | [IntakeForge](https://github.com/rohanarun/intakeforge) |
+| [ReleaseGuard](https://github.com/rohanarun/releaseguard) | [AccordSeal](https://github.com/rohanarun/accordseal) | [Letterline](https://github.com/rohanarun/letterline) | [SchemaDeck](https://github.com/rohanarun/schemadeck) |
+| [Recall Room](https://github.com/rohanarun/recall-room) | [Proofline Insights](https://github.com/rohanarun/proofline-insights) | [Learning Forge](https://github.com/rohanarun/learning-forge) | [Circlefield](https://github.com/rohanarun/circlefield) |
+| [GatherLedger](https://github.com/rohanarun/gatherledger) | [PeopleWeave](https://github.com/rohanarun/peopleweave) | [MeterProof](https://github.com/rohanarun/meterproof) | [AssureGraph](https://github.com/rohanarun/assuregraph) |
+| [LiveForum](https://github.com/rohanarun/liveforum) |  |  |  |
 
 | Family | Modules | Typed actions | Plan boundary |
 | --- | ---: | ---: | --- |

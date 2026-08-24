@@ -20,6 +20,7 @@
     "cli": "tsx src/cli/index.ts",
     "mcp": "tsx src/mcp/index.ts",
     "verify:mcp": "node scripts/verify-mcp.mjs",
+    "verify:live-products": "node scripts/verify-live-product-clients.mjs",
     "generate:products": "node --import tsx scripts/generate-product-repositories.mjs",
     "audit:licenses": "node scripts/license-audit.mjs",
     "migrate": "node dist-server/server/migrate-command.js",
