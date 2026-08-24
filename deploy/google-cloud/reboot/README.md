@@ -24,6 +24,12 @@ Before metadata can change, both running instances must already have the exact r
 
 The control startup script resolves the named HMAC secret through the instance service account at boot with shell tracing disabled. The worker startup script contains neither the secret name nor the HMAC environment variable. Existing secret values are never placed in Compute Engine metadata or command output.
 
+## Worker v0.4.1 hotfix
+
+`release-v0.4.1.json`, `reapply-worker-v0.4.1.sh`, and `startup-worker-v0.4.1.sh.in` are a worker-only reboot contract for the Docker missing-network response hotfix. They pin source commit `429ba369226c3193076959cf3ecb3a173e779a80` and image digest `sha256:963a1510094e104e6d0e3b557f04e82b606b4faa2018fc8e9487dbe0da4e18a8` while preserving the v0.4.0 worker identity, capacity, measurement-only storage mode, metadata firewall, and control-plane HMAC isolation.
+
+The worker helper refuses any release directory other than `/opt/managed-oss/releases/v0.4.1`, verifies every root-owned release asset, requires the running agent to use the exact pinned image during preflight, verifies SLSA provenance before pulling at boot, reruns the bridge metadata-isolation proof, and finishes through the normal worker readiness gate. It does not alter the control-host startup contract.
+
 ## First dry run
 
 Use a new absolute snapshot directory. The current reviewed topology is in `us-central1-a`: an `e2-medium` control host and an `e2-standard-2` private worker.
@@ -58,6 +64,7 @@ Do not run `terraform apply`, import unmanaged resources, or reconstruct state a
 
 ```bash
 bash deploy/google-cloud/reboot/tests/verify-existing-startup-metadata.sh
+bash deploy/google-cloud/reboot/tests/verify-worker-hotfix-v0.4.1.sh
 ```
 
-The test suite uses a fake `gcloud` executable. It proves the absent-control/existing-worker transitions, dry-run non-mutation, exact two-key apply behavior, preservation of `enable-oslogin`, private snapshots, HMAC isolation, and refusal on transition or machine drift. It makes no Google Cloud calls.
+The existing-instance test suite uses a fake `gcloud` executable. It proves the absent-control/existing-worker transitions, dry-run non-mutation, exact two-key apply behavior, preservation of `enable-oslogin`, private snapshots, HMAC isolation, and refusal on transition or machine drift. The v0.4.1 worker test independently verifies the pinned commit and image, every asset digest, startup-template hashes, HMAC absence, provenance-before-pull ordering, metadata isolation, and readiness. Neither test makes Google Cloud calls.

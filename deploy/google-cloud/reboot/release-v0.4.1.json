@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "releaseVersion": "v0.4.1",
+  "releaseRole": "worker-network-reconciliation-hotfix",
+  "sourceCommit": "429ba369226c3193076959cf3ecb3a173e779a80",
+  "controlPlaneImage": "ghcr.io/rohanarun/managed-oss-cloud@sha256:963a1510094e104e6d0e3b557f04e82b606b4faa2018fc8e9487dbe0da4e18a8",
+  "workerRuntime": {
+    "CONTROL_PLANE_AGENT_URL": "https://cloud.getsupers.com",
+    "GCP_WORKER_IDENTITY_AUDIENCE": "https://cloud.getsupers.com/api/agent/register",
+    "WORKER_CAPACITY_MEMORY_MB": "7168",
+    "WORKER_CAPACITY_CPU_MILLIS": "1800",
+    "WORKER_CAPACITY_STORAGE_GB": "180",
+    "WORKER_SYSTEM_RESERVE_MEMORY_MB": "768",
+    "WORKER_SYSTEM_RESERVE_CPU_MILLIS": "200",
+    "WORKER_SYSTEM_RESERVE_STORAGE_GB": "15",
+    "WORKER_STORAGE_QUOTA_BACKEND": "measurement-only",
+    "WORKER_STORAGE_QUOTA_PROOF_COMPLETED": "false"
+  },
+  "assetSha256": {
+    "deploy/google-cloud/worker/docker-compose.yml": "671a8b121c039f4da255ee614620413d2990cb3d03f719d15c2133d0da81c699",
+    "deploy/google-cloud/worker/Caddyfile": "e702fa4af99bb6a3fb7b9cdfa99b497540e59644c50129bb812cb5fec11ed1a3",
+    "deploy/google-cloud/readiness/worker-ready.sh": "f00aa02f18382b0cfd148341d4284081d386f000140c836d51d1b9841e651897",
+    "deploy/google-cloud/provenance/verify-control-plane-image.sh": "948956785c7cf3fdb79195cf5e1a570890670ed437473a280529d517270706e8",
+    "deploy/google-cloud/worker/metadata-firewall.sh": "8823fdf764e4ee499dd8a7b4f586ae62d259eeaf4bc18caacd0f003d5f93e489",
+    "deploy/google-cloud/metadata-firewall-proof.sh": "a4852668b5f2ece0c76a790c93112fa6ab16d4bd517f3630a84640fcd33a9528",
+    "deploy/google-cloud/worker/managed-oss-metadata-firewall.service": "b42d54ce5813fdaa34a505f880cd7bcdce5466537968bb7c21838b96103be68f",
+    "deploy/google-cloud/worker/docker-metadata-firewall.conf": "14b7d13ce3b95131880f42c3fafdf4090d0601e43d50a54dfb27bd941bf19afb"
+  }
+}
