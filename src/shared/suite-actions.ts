@@ -5,6 +5,7 @@ import { emailActions } from "./email-actions.js";
 import { firstPartyGrowthActions } from "./first-party-growth-actions.js";
 import { premiumBusinessActions } from "./premium-business-actions.js";
 import { additiveWaveTwoActions } from "./extended-business-actions.js";
+import { legacySuiteActionInputSchema, legacySuiteModuleIds } from "./legacy-suite-action-schemas.js";
 
 export type SuiteActionOperation = "create" | "update" | "ai" | "command" | "read";
 export type SuiteActionRequiredScope = "read" | "write" | "ai";
@@ -52,7 +53,7 @@ export interface SuiteActionDefinition {
   effectBoundary?: string;
 }
 
-export const suiteActions: SuiteActionDefinition[] = [
+const legacySuiteActions: SuiteActionDefinition[] = [
   { id: "site-create", moduleId: "consent", title: "Create consent site", description: "Create an unconfigured privacy site before binding and proving its production domain.", operation: "create", recordType: "site", titleField: "name", resultingState: "unconfigured", requiredFields: ["name"] },
   { id: "site-configure", moduleId: "consent", title: "Configure consent site", description: "Bind a canonical hostname and explicit no-location fallback to a consent site and issue a DNS proof challenge.", operation: "command", recordType: "site", requiredFields: ["siteId", "domain", "fallbackBehavior"] },
   { id: "domain-verify", moduleId: "consent", title: "Verify consent domain", description: "Resolve the configured DNS TXT challenge and record its evidence without accepting client-asserted ownership.", operation: "command", recordType: "site", requiredFields: ["siteId"] },
@@ -174,6 +175,20 @@ export const suiteActions: SuiteActionDefinition[] = [
   { id: "revision-rollback", moduleId: "flags", title: "Roll back flag revision", description: "Republish a prior exact revision as a new monotonic version with preserved lineage.", operation: "command", recordType: "rollback-event", requiredFields: ["revisionId", "contentHash", "baseVersion", "idempotencyKey"] },
   { id: "stale-review", moduleId: "flags", title: "Review stale flags", description: "Return evidence-backed expired or inactive flag suggestions without mutating configuration.", operation: "read", recordType: "flag", requiredFields: ["projectId"] },
 ];
+
+const legacyModuleSet = new Set<string>(legacySuiteModuleIds);
+for (const action of legacySuiteActions) {
+  if (!legacyModuleSet.has(action.moduleId)) throw new Error(`Unexpected legacy suite module ${action.moduleId}.`);
+  const inputSchema = legacySuiteActionInputSchema(action.moduleId, action.id);
+  if (!inputSchema) throw new Error(`Missing explicit input schema for legacy action ${action.moduleId}/${action.id}.`);
+  if (JSON.stringify(inputSchema.required) !== JSON.stringify(action.requiredFields)) {
+    throw new Error(`Legacy action schema required fields drifted for ${action.moduleId}/${action.id}.`);
+  }
+  action.engine = "legacy";
+  action.inputSchema = inputSchema;
+}
+
+export const suiteActions: SuiteActionDefinition[] = [...legacySuiteActions];
 
 for (const action of coreBusinessActions) {
   suiteActions.push({
@@ -525,6 +540,7 @@ export function suiteActionFields(action: SuiteActionDefinition): SuiteActionFie
 
 function schemaExample(schema: Record<string, unknown> | undefined, name: string, kind: SuiteActionFieldKind): unknown {
   if (!schema) return fieldExample(name, kind);
+  if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
   if ("const" in schema) return schema.const;
   if (Array.isArray(schema.enum) && schema.enum.length) return schema.enum[0];
   if (Array.isArray(schema.anyOf) && schema.anyOf.length) return schemaExample(schema.anyOf[0] as Record<string, unknown>, name, kind);
