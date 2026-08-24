@@ -120,7 +120,7 @@ EOF
   "$node_image" node --input-type=module -e \
   'import http from "node:http"; http.createServer((_request, response) => { response.end("control-route-ok"); }).listen(8787, "0.0.0.0");' >/dev/null
 
-"$docker_bin" run -d --name "$control_caddy" --network "$network" --network-alias control-edge \
+"$docker_bin" run -d --name "$control_caddy" --network "$network" --network-alias control-edge --entrypoint caddy \
   -e CONTROL_PLANE_DOMAIN=control.localhost -e PLATFORM_IPV4=127.0.0.2 \
   -v "$repo_root/deploy/google-cloud/Caddyfile:/etc/caddy/Caddyfile:ro" \
   "$caddy_image" run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
@@ -138,7 +138,7 @@ EOF
 
 "$docker_bin" rm -f "$control_caddy" >/dev/null
 
-"$docker_bin" run -d --name "$worker_caddy" --network "$network" --network-alias worker-edge \
+"$docker_bin" run -d --name "$worker_caddy" --network "$network" --network-alias worker-edge --entrypoint caddy \
   -v "$repo_root/deploy/google-cloud/worker/Caddyfile:/etc/caddy/Caddyfile:ro" \
   -v "$temporary_dir/apps.caddy:/etc/caddy/apps.caddy:ro" \
   "$caddy_image" run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null

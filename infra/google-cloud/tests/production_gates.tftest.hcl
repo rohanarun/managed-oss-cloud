@@ -61,10 +61,12 @@ run "live_billing_accepts_atomic_production_configuration" {
   command = plan
 
   variables {
-    billing_mode                     = "live"
-    provisioning_mode                = "live"
-    worker_count                     = 1
-    subscription_reconciliation_mode = "apply"
+    billing_mode                         = "live"
+    provisioning_mode                    = "live"
+    worker_count                         = 1
+    subscription_reconciliation_mode     = "apply"
+    worker_storage_quota_backend         = "operator-project-quota"
+    worker_storage_quota_proof_completed = true
   }
 
   assert {
