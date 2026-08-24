@@ -1,11 +1,12 @@
 mock_provider "google" {}
 
 variables {
-  project_id                  = "managed-oss-test"
-  control_plane_domain        = "control.example.com"
-  control_plane_image         = "ghcr.io/rohanarun/managed-oss-cloud@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  control_plane_source_commit = "0000000000000000000000000000000000000000"
-  stripe_publishable_key      = "pk_test_configuration_only"
+  project_id                        = "managed-oss-test"
+  control_plane_domain              = "control.example.com"
+  control_plane_image               = "ghcr.io/rohanarun/managed-oss-cloud@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  control_plane_source_commit       = "0000000000000000000000000000000000000000"
+  google_oauth_assertion_public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  stripe_publishable_key            = "pk_test_configuration_only"
 }
 
 run "disabled_billing_and_backup_are_safe_defaults" {
