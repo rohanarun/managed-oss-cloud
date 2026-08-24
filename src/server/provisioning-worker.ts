@@ -5,19 +5,36 @@ import { appendFile, open, readFile, mkdir, rm, stat, writeFile } from "node:fs/
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
-import type { AgentJob, ApplicationInstance } from "../shared/types.js";
-import { buildRuntimeManifest, type RuntimeManifest } from "./app-manifests.js";
-import { updateComposeApplicationImage } from "./compose-upgrade.js";
+import type { AgentJob, ApplicationInstance, WorkerNodeActivity, WorkerNodeRoute } from "../shared/types.js";
+import { buildRuntimeManifest, runtimeIngressNetwork, runtimeReservation, type RuntimeManifest } from "./app-manifests.js";
+import { migrateComposeIngressNetwork, migrateComposeResourceLimits, updateComposeApplicationImage, type ManagedEnvironmentSynchronization } from "./compose-upgrade.js";
 import { config } from "./config.js";
+import { runtimeReadinessIssue } from "./runtime-readiness.js";
+import { requestGcpInstanceIdentityToken } from "./gcp-instance-identity.js";
+import { assertManifestMatchesReservation, assertWorkerResourceConsistency, assignedApplicationUsage, enforceStorageQuarantineContract, parseQuotaHelperProof, quotaHelperArguments, readHostResourceSnapshot, storageBytesPerGb, storageQuarantineMarker, writeStorageQuarantine, type WorkerResourcePolicy } from "./worker-resource-enforcement.js";
 
 const execFileAsync = promisify(execFile);
-const memoryReserveBytes = 160 * 1024 * 1024;
-
 function manifestOptions() {
-  const googleOAuth = config.GOOGLE_OAUTH_CLIENT_ID && config.GOOGLE_OAUTH_CLIENT_SECRET && config.GOOGLE_OAUTH_STATE_SECRET && config.GOOGLE_OAUTH_CALLBACK_URL
-    ? { clientId: config.GOOGLE_OAUTH_CLIENT_ID, clientSecret: config.GOOGLE_OAUTH_CLIENT_SECRET, stateSecret: config.GOOGLE_OAUTH_STATE_SECRET, callbackUrl: config.GOOGLE_OAUTH_CALLBACK_URL }
+  const googleOAuthBroker = config.GOOGLE_OAUTH_BROKER_START_URL && config.GOOGLE_OAUTH_ASSERTION_PUBLIC_KEY
+    ? { startUrl: config.GOOGLE_OAUTH_BROKER_START_URL, assertionPublicKey: config.GOOGLE_OAUTH_ASSERTION_PUBLIC_KEY }
     : undefined;
-  return { platformNetwork: config.PLATFORM_DOCKER_NETWORK, googleOAuth };
+  return { googleOAuthBroker, platformNetworkName: config.PLATFORM_DOCKER_NETWORK };
+}
+
+function resourcePolicy(): WorkerResourcePolicy {
+  if (!config.WORKER_NODE_ID || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS || !config.WORKER_CAPACITY_STORAGE_GB) throw new Error("Worker resource policy is incomplete.");
+  return {
+    workerNodeId: config.WORKER_NODE_ID,
+    appsRoot: config.HOST_APPS_ROOT,
+    capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB,
+    capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS,
+    capacityStorageGb: config.WORKER_CAPACITY_STORAGE_GB,
+    systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB,
+    systemReserveCpuMillis: config.WORKER_SYSTEM_RESERVE_CPU_MILLIS,
+    systemReserveStorageGb: config.WORKER_SYSTEM_RESERVE_STORAGE_GB,
+    launchMemoryReserveMb: config.WORKER_LAUNCH_MEMORY_RESERVE_MB,
+    storageQuotaBackend: config.WORKER_STORAGE_QUOTA_BACKEND,
+  };
 }
 
 interface WorkerReport {
@@ -46,8 +63,11 @@ class AgentClient {
   async initialize() {
     this.token = (await readFile(config.WORKER_AGENT_TOKEN_FILE, "utf8").catch(() => "")).trim();
     if (!this.token) {
-      if (!config.WORKER_BOOTSTRAP_TOKEN || !config.WORKER_NODE_ID || !config.WORKER_NODE_NAME || !config.WORKER_PRIVATE_ADDRESS || !config.WORKER_MACHINE_TYPE || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS || !config.WORKER_CAPACITY_STORAGE_GB) throw new Error("Remote worker registration settings are incomplete.");
-      const registered = await this.request<{ agentToken: string }>("/api/agent/register", { method: "POST", body: JSON.stringify({ id: config.WORKER_NODE_ID, name: config.WORKER_NODE_NAME, privateAddress: config.WORKER_PRIVATE_ADDRESS, machineType: config.WORKER_MACHINE_TYPE, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, capacityStorageGb: config.WORKER_CAPACITY_STORAGE_GB, systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB }) }, config.WORKER_BOOTSTRAP_TOKEN);
+      if ((!config.GCP_WORKER_IDENTITY_AUDIENCE && !config.WORKER_BOOTSTRAP_TOKEN) || !config.WORKER_NODE_ID || !config.WORKER_NODE_NAME || !config.WORKER_PRIVATE_ADDRESS || !config.WORKER_MACHINE_TYPE || !config.WORKER_CAPACITY_MEMORY_MB || !config.WORKER_CAPACITY_CPU_MILLIS || !config.WORKER_CAPACITY_STORAGE_GB) throw new Error("Remote worker registration settings are incomplete.");
+      const enrollmentCredential = config.GCP_WORKER_IDENTITY_AUDIENCE
+        ? await requestGcpInstanceIdentityToken(config.GCP_WORKER_IDENTITY_AUDIENCE)
+        : config.WORKER_BOOTSTRAP_TOKEN!;
+      const registered = await this.request<{ agentToken: string }>("/api/agent/register", { method: "POST", body: JSON.stringify({ id: config.WORKER_NODE_ID, name: config.WORKER_NODE_NAME, privateAddress: config.WORKER_PRIVATE_ADDRESS, machineType: config.WORKER_MACHINE_TYPE, capacityMemoryMb: config.WORKER_CAPACITY_MEMORY_MB, capacityCpuMillis: config.WORKER_CAPACITY_CPU_MILLIS, capacityStorageGb: config.WORKER_CAPACITY_STORAGE_GB, systemReserveMemoryMb: config.WORKER_SYSTEM_RESERVE_MEMORY_MB }) }, enrollmentCredential);
       if (!registered?.agentToken) throw new Error("Control plane did not return a worker token.");
       this.token = registered.agentToken;
       await mkdir(path.dirname(config.WORKER_AGENT_TOKEN_FILE), { recursive: true, mode: 0o700 });
@@ -63,7 +83,12 @@ class AgentClient {
 
   async claim() { return (await this.request<{ job: AgentJob }>("/api/agent/jobs/claim", { method: "POST", body: "{}" }))?.job; }
   async report(jobId: string, report: WorkerReport) { await this.request(`/api/agent/jobs/${jobId}/report`, { method: "POST", body: JSON.stringify(report) }); }
-  async routes() { return (await this.request<{ routes: Array<{ hostname: string; containerProject: string; appId: string }> }>("/api/agent/routes"))?.routes ?? []; }
+  async routes() { return (await this.request<{ routes: WorkerNodeRoute[] }>("/api/agent/routes"))?.routes ?? []; }
+  async activity() {
+    const activity = (await this.request<{ activity: WorkerNodeActivity }>("/api/agent/activity"))?.activity;
+    if (!activity) throw new Error("Control plane did not return worker resource activity.");
+    return activity;
+  }
 }
 
 function workspacePath(instance: ApplicationInstance) {
@@ -78,31 +103,141 @@ async function docker(args: string[]) {
   return execFileAsync("docker", args, { timeout: 15 * 60_000, maxBuffer: 4 * 1024 * 1024 });
 }
 
-function manifestReservation(manifest: RuntimeManifest) {
-  return Object.values(manifest.compose.services).reduce((sum, service) => {
-    const limit = String(service.mem_limit ?? "0m").match(/^(\d+)m$/i);
-    return sum + (limit ? Number(limit[1]) * 1024 * 1024 : 0);
-  }, 0);
+function dockerFailure(error: unknown) {
+  if (!error || typeof error !== "object") return String(error);
+  const details = error as { message?: unknown; stderr?: unknown; stdout?: unknown };
+  return [details.message, details.stderr, details.stdout].map((value) => String(value ?? "")).join("\n");
 }
 
-async function availableMemoryBytes() {
-  const contents = await readFile("/proc/meminfo", "utf8");
-  const available = contents.match(/^MemAvailable:\s+(\d+) kB$/m);
-  if (!available) throw new Error("Host memory availability could not be measured.");
-  return Number(available[1]) * 1024;
-}
-
-async function assertCapacity(manifests: RuntimeManifest[]) {
-  const requested = manifests.reduce((sum, manifest) => sum + manifestReservation(manifest), 0);
-  const available = await availableMemoryBytes();
-  if (requested + memoryReserveBytes > available) {
-    throw new Error(`Insufficient safe memory: ${Math.ceil(requested / 1048576)} MB requested with ${Math.floor(available / 1048576)} MB currently available. Upgrade capacity before retrying.`);
+async function networkExists(networkName: string) {
+  try {
+    await docker(["network", "inspect", networkName]);
+    return true;
+  } catch (error) {
+    if (/no such network/i.test(dockerFailure(error))) return false;
+    throw error;
   }
 }
 
+async function ensureIngressNetwork(instance: ApplicationInstance) {
+  const networkName = runtimeIngressNetwork(instance);
+  if (!await networkExists(networkName)) {
+    await docker(["network", "create", "--label", "com.getsupers.managed=true", "--label", `com.getsupers.application-instance=${instance.id}`, networkName]);
+  }
+  return networkName;
+}
+
+async function isolateApplicationIngress(instance: ApplicationInstance, recreate: boolean) {
+  const networkName = await ensureIngressNetwork(instance);
+  const composePath = path.join(workspacePath(instance), "compose.json");
+  const targetManifest = buildRuntimeManifest(instance, manifestOptions());
+  const migration = await migrateComposeIngressNetwork(composePath, networkName, targetManifest.compose.services.proxy, targetManifest.compose.networks.platform);
+  const resourceMigration = await migrateComposeResourceLimits(composePath, targetManifest.compose.services);
+  if ((migration.changed || resourceMigration.changed) && recreate) await docker(["compose", "-f", composePath, "up", "-d", "--force-recreate", "--wait", "app", "proxy"]);
+  return { changed: migration.changed || resourceMigration.changed, ingressNetworkName: networkName };
+}
+
+async function removeIngressNetwork(instance: ApplicationInstance) {
+  const networkName = runtimeIngressNetwork(instance);
+  if (!await networkExists(networkName)) return;
+  await docker(["network", "rm", networkName]);
+}
+
+async function verifyRuntimeReadiness(manifest: RuntimeManifest) {
+  if (!manifest.readiness) return;
+  const url = `http://127.0.0.1:${manifest.internalPort}${manifest.readiness.path}`;
+  let lastError = "readiness endpoint did not respond";
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    let response: unknown;
+    try {
+      const result = await docker(["exec", manifest.primaryContainer, "node", "--input-type=module", "-e", "const response=await fetch(process.argv[1]);const body=await response.text();if(!response.ok)throw new Error(`HTTP ${response.status}: ${body.slice(0,200)}`);process.stdout.write(body);", url]);
+      response = JSON.parse(String(result.stdout));
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : lastError;
+      if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 2_000));
+      continue;
+    }
+    const issue = runtimeReadinessIssue(manifest, response);
+    if (issue) throw new Error(issue);
+    return;
+  }
+  throw new Error(`Application ${manifest.appId} failed its readiness check at ${manifest.readiness.path}: ${lastError.slice(0, 500)}`);
+}
+
+function applicationPath(applicationId: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(applicationId)) throw new Error("Invalid managed application identifier.");
+  const root = path.resolve(config.HOST_APPS_ROOT);
+  const directory = path.resolve(root, applicationId);
+  if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Application resource path escaped the managed root.");
+  return directory;
+}
+
+async function runQuotaHelper(action: "apply" | "verify", instance: Pick<ApplicationInstance, "id" | "storageReservationGb">) {
+  if (config.WORKER_STORAGE_QUOTA_BACKEND !== "operator-project-quota") return;
+  if (!config.WORKER_STORAGE_QUOTA_HELPER) throw new Error("Operator project-quota mode requires WORKER_STORAGE_QUOTA_HELPER.");
+  const applicationDirectory = applicationPath(instance.id);
+  const storageLimitBytes = instance.storageReservationGb * storageBytesPerGb;
+  const result = await execFileAsync(config.WORKER_STORAGE_QUOTA_HELPER, quotaHelperArguments(action, applicationDirectory, instance.id, storageLimitBytes), { timeout: 30_000, maxBuffer: 1024 * 1024 });
+  parseQuotaHelperProof(String(result.stdout), { applicationPath: applicationDirectory, applicationId: instance.id, storageLimitBytes });
+}
+
+async function recordStorageQuarantine(application: { id: string; appId: string; usedBytes: number; storageLimitBytes: number }) {
+  const directory = applicationPath(application.id);
+  if (!await storageQuarantineMarker(directory)) {
+    await writeStorageQuarantine(directory, { applicationId: application.id, appId: application.appId, usedBytes: application.usedBytes, storageLimitBytes: application.storageLimitBytes, observedAt: new Date().toISOString() });
+  }
+}
+
+async function stopStorageQuarantinedApplication(application: { id: string }) {
+  const directory = applicationPath(application.id);
+  const composePath = path.join(directory, "compose.json");
+  if (await pathHasType(composePath, "file")) await docker(["compose", "-f", composePath, "stop"]);
+}
+
+async function pathHasType(candidate: string, expected: "file" | "directory") {
+  try {
+    const details = await stat(candidate);
+    return expected === "file" ? details.isFile() : details.isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function reconcileWorkerResources(agent: AgentClient, pending: ApplicationInstance[] = []) {
+  const activity = await agent.activity();
+  const usage = await assignedApplicationUsage(activity, config.HOST_APPS_ROOT);
+  const overQuota = usage.filter((application) => application.overQuota);
+  await enforceStorageQuarantineContract(overQuota, {
+    quarantine: recordStorageQuarantine,
+    removeQuarantinedRoutes: () => reloadRoutes(agent),
+    stop: stopStorageQuarantinedApplication,
+  });
+
+  for (const application of activity.assignedApplications) {
+    const directory = applicationPath(application.id);
+    const exists = await pathHasType(directory, "directory");
+    if (exists && config.WORKER_STORAGE_QUOTA_BACKEND === "operator-project-quota") {
+      const reservation = runtimeReservation(application.appId);
+      await runQuotaHelper("verify", { id: application.id, storageReservationGb: reservation.storageGb });
+    }
+  }
+
+  const pendingMemoryMb = pending.reduce((total, instance) => total + assertManifestMatchesReservation(instance, buildRuntimeManifest(instance, manifestOptions())).memoryMb, 0);
+  const host = await readHostResourceSnapshot(config.HOST_APPS_ROOT);
+  assertWorkerResourceConsistency(activity, resourcePolicy(), host, pendingMemoryMb);
+  return { activity, overQuota };
+}
+
+async function assertNotStorageQuarantined(instance: Pick<ApplicationInstance, "id">) {
+  if (await storageQuarantineMarker(applicationPath(instance.id))) throw new Error(`Application ${instance.id} is storage-quarantined and cannot start until an operator reduces usage, verifies a backup, and explicitly clears the marker.`);
+}
+
 async function writeCompose(instance: ApplicationInstance, manifest: RuntimeManifest) {
+  assertManifestMatchesReservation(instance, manifest);
   const directory = workspacePath(instance);
   await mkdir(directory, { recursive: true, mode: 0o750 });
+  await runQuotaHelper("apply", instance);
   const composePath = path.join(directory, "compose.json");
   await writeFile(composePath, `${JSON.stringify(manifest.compose, null, 2)}\n`, { mode: 0o600 });
   return composePath;
@@ -110,13 +245,20 @@ async function writeCompose(instance: ApplicationInstance, manifest: RuntimeMani
 
 async function reloadRoutes(agent: AgentClient) {
   const routes = await agent.routes();
-  const blocks = routes.map((route) => {
-    const instance: ApplicationInstance = { id: "00000000-0000-0000-0000-000000000000", installationId: "", appId: route.appId, state: "live", hostname: route.hostname, containerProject: route.containerProject, customDomains: [], memoryReservationMb: 0, cpuReservationMillis: 0, storageReservationGb: 0, createdAt: "", updatedAt: "" };
-    const manifest = buildRuntimeManifest(instance, { platformNetwork: config.PLATFORM_DOCKER_NETWORK });
-    return `http://${route.hostname}:8080 {\n  encode zstd gzip\n  reverse_proxy ${manifest.primaryContainer}:${manifest.internalPort}\n}`;
+  const instances = routes.map((route): ApplicationInstance => ({ id: route.applicationInstanceId, installationId: "", appId: route.appId, state: "live", hostname: route.hostname, containerProject: route.containerProject, customDomains: [], memoryReservationMb: 0, cpuReservationMillis: 0, storageReservationGb: 0, createdAt: "", updatedAt: "" }));
+  const routable: Array<{ route: WorkerNodeRoute; instance: ApplicationInstance }> = [];
+  for (let index = 0; index < instances.length; index += 1) {
+    const instance = instances[index];
+    if (await storageQuarantineMarker(applicationPath(instance.id))) continue;
+    await isolateApplicationIngress(instance, true);
+    routable.push({ route: routes[index], instance });
+  }
+  const blocks = routable.map(({ route, instance }) => {
+    const manifest = buildRuntimeManifest(instance, manifestOptions());
+    return `http://${route.hostname}:8080 {\n  encode zstd gzip\n  reverse_proxy ${manifest.proxyContainer}:8080\n}`;
   });
   await writeFile(config.HOST_CADDY_CONFIG, `${blocks.join("\n\n")}\n`, { mode: 0o640 });
-  await docker(["exec", config.PLATFORM_CADDY_CONTAINER, "caddy", "reload", "--config", "/etc/caddy/Caddyfile"]);
+  await docker(["exec", config.PLATFORM_CADDY_CONTAINER, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--address", "127.0.0.1:2019"]);
 }
 
 async function metadataAccessToken() {
@@ -203,7 +345,7 @@ async function backup(job: AgentJob) {
       await uploadBackup(encryptedPath, objectName);
       backups.push({ applicationInstanceId: instance.id, objectName, sizeBytes: (await stat(encryptedPath)).size });
     } finally {
-      if (stopped) await docker(["compose", "-f", composePath, "start", "app"]).catch(() => undefined);
+      if (stopped && !await storageQuarantineMarker(directory)) await docker(["compose", "-f", composePath, "start", "app"]).catch(() => undefined);
       await rm(archivePath, { force: true });
       await rm(encryptedPath, { force: true });
       await rm(path.join(directory, ".managed-backup"), { recursive: true, force: true });
@@ -222,6 +364,10 @@ async function restore(job: AgentJob, agent: AgentClient) {
   const archivePath = `/tmp/managed-oss-restore-${job.id}.tar.gz`;
   const composePath = path.join(directory, "compose.json");
   try {
+    await assertNotStorageQuarantined(instance);
+    assertManifestMatchesReservation(instance, buildRuntimeManifest(instance, manifestOptions()));
+    await runQuotaHelper("verify", instance);
+    await isolateApplicationIngress(instance, false);
     await downloadBackup(objectName, encryptedPath);
     await decryptArchive(encryptedPath, archivePath);
     const listing = await execFileAsync("tar", ["-tzf", archivePath], { timeout: 5 * 60_000 });
@@ -246,7 +392,6 @@ async function restore(job: AgentJob, agent: AgentClient) {
       await docker(["exec", `${instance.containerProject}-mongo`, "mongorestore", "--archive=/tmp/database.dump", "--drop", "--nsInclude=heyform.*"]);
     }
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
-    await reloadRoutes(agent);
   } finally {
     await rm(encryptedPath, { force: true });
     await rm(archivePath, { force: true });
@@ -259,47 +404,76 @@ async function install(job: AgentJob, agent: AgentClient) {
   const targets = requestedId ? job.applications.filter((instance) => instance.id === requestedId) : job.applications.filter((instance) => instance.state === "queued" || instance.state === "provisioning");
   if (!targets.length) throw new Error("Install job did not include a queued application.");
   const manifests = targets.map((instance) => buildRuntimeManifest(instance, manifestOptions()));
-  await assertCapacity(manifests);
   for (let index = 0; index < targets.length; index += 1) {
     const instance = targets[index];
     const manifest = manifests[index];
+    await assertNotStorageQuarantined(instance);
+    assertManifestMatchesReservation(instance, manifest);
+    await ensureIngressNetwork(instance);
     const composePath = await writeCompose(instance, manifest);
     await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
   }
-  await reloadRoutes(agent);
 }
 
 async function changeLifecycle(job: AgentJob, agent: AgentClient) {
   for (const instance of job.applications) {
     const composePath = path.join(workspacePath(instance), "compose.json");
+    const startsApplication = job.action === "upgrade" || job.action === "start";
+    if (startsApplication) {
+      await assertNotStorageQuarantined(instance);
+      assertManifestMatchesReservation(instance, buildRuntimeManifest(instance, manifestOptions()));
+      await runQuotaHelper("verify", instance);
+    }
     if (job.action === "upgrade") {
+      await isolateApplicationIngress(instance, false);
       const targetManifest = buildRuntimeManifest(instance, manifestOptions());
       const targetImage = targetManifest.compose.services.app?.image;
       if (typeof targetImage !== "string") throw new Error(`Application ${instance.appId} has no upgradeable app image.`);
       const targetEnvironment = targetManifest.compose.services.app?.environment;
       const environmentRecord = targetEnvironment && typeof targetEnvironment === "object" && !Array.isArray(targetEnvironment) ? targetEnvironment as Record<string, unknown> : undefined;
-      const managedEnvironment = instance.appId === "heyform" && environmentRecord
-        ? Object.fromEntries(["GOOGLE_LOGIN_CLIENT_ID", "GOOGLE_LOGIN_CLIENT_SECRET", "MANAGED_OAUTH_STATE_SECRET", "MANAGED_GOOGLE_CALLBACK_URL"].flatMap((key) => typeof environmentRecord[key] === "string" ? [[key, environmentRecord[key] as string]] : []))
-        : {};
-      await updateComposeApplicationImage(composePath, targetImage, managedEnvironment);
+      let synchronization: ManagedEnvironmentSynchronization | undefined;
+      if (instance.appId === "heyform") {
+        const required = ["MANAGED_GOOGLE_BROKER_START_URL", "MANAGED_OAUTH_ASSERTION_PUBLIC_KEY", "MANAGED_OAUTH_APPLICATION_ID"];
+        const set = Object.fromEntries(required.flatMap((key) => typeof environmentRecord?.[key] === "string" && (environmentRecord[key] as string).trim() ? [[key, environmentRecord[key] as string]] : []));
+        if (Object.keys(set).length !== required.length) throw new Error("Managed HeyForm upgrade requires the complete hosting-layer public OAuth broker configuration.");
+        synchronization = {
+          set,
+          required,
+          remove: ["GOOGLE_LOGIN_CLIENT_ID", "GOOGLE_LOGIN_CLIENT_SECRET", "MANAGED_OAUTH_STATE_SECRET", "MANAGED_GOOGLE_CALLBACK_URL", "GOOGLE_LOGIN_CALLBACK_URL"],
+        };
+      }
+      await updateComposeApplicationImage(composePath, targetImage, synchronization);
       await docker(["compose", "-f", composePath, "pull", "app"]);
     }
-    if (job.action === "upgrade" || job.action === "start") await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
+    if (job.action === "start") await isolateApplicationIngress(instance, false);
+    if (job.action === "upgrade") await docker(["compose", "-f", composePath, "up", "-d", "--force-recreate", "--no-deps", "--wait", "app"]);
+    if (startsApplication) await docker(["compose", "-f", composePath, "up", "-d", "--wait"]);
     if (job.action === "stop") await docker(["compose", "-f", composePath, "stop"]);
     if (job.action === "uninstall") {
       await docker(["compose", "-f", composePath, "down", "--remove-orphans"]);
+      await removeIngressNetwork(instance);
       await rm(workspacePath(instance), { recursive: true, force: true });
     }
   }
-  await reloadRoutes(agent);
 }
 
 async function run() {
   if (config.PROVISIONING_WORKER !== "remote") throw new Error("Provisioning worker refused to start unless PROVISIONING_WORKER=remote.");
   const agent = new AgentClient();
   await agent.initialize();
+  const startupResources = await reconcileWorkerResources(agent);
+  await reloadRoutes(agent);
+  if (startupResources.overQuota.length) process.stderr.write(`${startupResources.overQuota.length} application workspace(s) were stopped and storage-quarantined during startup reconciliation.\n`);
   process.stdout.write(`Provisioning worker ${config.WORKER_NODE_ID} ready\n`);
   setInterval(() => { void agent.heartbeat().catch((error) => process.stderr.write(`${error instanceof Error ? error.message : "Worker heartbeat failed."}\n`)); }, 30_000);
+  let storageScanRunning = false;
+  setInterval(() => {
+    if (storageScanRunning) return;
+    storageScanRunning = true;
+    void reconcileWorkerResources(agent)
+      .catch((error) => process.stderr.write(`${error instanceof Error ? error.message : "Worker resource reconciliation failed."}\n`))
+      .finally(() => { storageScanRunning = false; });
+  }, config.WORKER_STORAGE_SCAN_MILLISECONDS);
   while (true) {
     let job: AgentJob | undefined;
     try { job = await agent.claim(); }
@@ -311,6 +485,9 @@ async function run() {
     if (!job) { await new Promise((resolve) => setTimeout(resolve, config.PROVISIONING_POLL_MILLISECONDS)); continue; }
     try {
       let backups: WorkerReport["backups"];
+      const pendingLaunch = ["install", "start", "restore"].includes(job.action) ? job.applications : [];
+      const resources = await reconcileWorkerResources(agent, pendingLaunch);
+      if (resources.overQuota.length && !["backup", "stop", "uninstall", "reload-routes"].includes(job.action)) throw new Error("Worker provisioning is blocked while any assigned application remains storage-quarantined.");
       if (job.action === "install") await install(job, agent);
       else if (["upgrade", "stop", "start", "uninstall"].includes(job.action)) await changeLifecycle(job, agent);
       else if (job.action === "reload-routes") await reloadRoutes(agent);
@@ -318,6 +495,9 @@ async function run() {
       else if (job.action === "restore") await restore(job, agent);
       else throw new Error(`Worker action ${job.action} is not enabled yet.`);
       const applicationState = job.action === "stop" || job.action === "uninstall" ? "stopped" : "live";
+      if (applicationState === "live") {
+        for (const application of job.applications) await verifyRuntimeReadiness(buildRuntimeManifest(application, manifestOptions()));
+      }
       await agent.report(job.id, { status: "succeeded", backups, applications: job.applications.map((application) => ({ id: application.id, state: applicationState, healthy: applicationState === "live" })) });
       await reloadRoutes(agent);
     } catch (error) {

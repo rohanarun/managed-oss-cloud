@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Managed OSS control-plane backup every day
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=20m
+Persistent=true
+AccuracySec=1m
+Unit=managed-oss-control-plane-backup.service
+
+[Install]
+WantedBy=timers.target

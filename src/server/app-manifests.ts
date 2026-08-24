@@ -8,6 +8,12 @@ export interface RuntimeManifest {
   internalPort: number;
   healthPath: string;
   primaryContainer: string;
+  proxyContainer: string;
+  readiness?: {
+    path: string;
+    acceptedEntryPageTypes: string[];
+    rejectedEntryPageTypes: string[];
+  };
   compose: {
     name: string;
     services: Record<string, ComposeService>;
@@ -16,22 +22,20 @@ export interface RuntimeManifest {
 }
 
 export interface ManifestOptions {
-  platformNetwork: string;
-  googleOAuth?: {
-    clientId: string;
-    clientSecret: string;
-    stateSecret: string;
-    callbackUrl: string;
+  platformNetworkName?: string;
+  googleOAuthBroker?: {
+    startUrl: string;
+    assertionPublicKey: string;
   };
 }
 
 const reservations: Record<string, { memoryMb: number; cpuMillis: number; storageGb: number }> = {
-  "cal-diy": { memoryMb: 3072, cpuMillis: 1500, storageGb: 20 },
-  documenso: { memoryMb: 2112, cpuMillis: 1000, storageGb: 20 },
-  heyform: { memoryMb: 1312, cpuMillis: 750, storageGb: 20 },
-  "uptime-kuma": { memoryMb: 384, cpuMillis: 250, storageGb: 3 },
-  listmonk: { memoryMb: 576, cpuMillis: 500, storageGb: 10 },
-  umami: { memoryMb: 768, cpuMillis: 750, storageGb: 10 },
+  "cal-diy": { memoryMb: 3104, cpuMillis: 1500, storageGb: 20 },
+  documenso: { memoryMb: 2144, cpuMillis: 1000, storageGb: 20 },
+  heyform: { memoryMb: 1344, cpuMillis: 750, storageGb: 20 },
+  "uptime-kuma": { memoryMb: 416, cpuMillis: 250, storageGb: 3 },
+  listmonk: { memoryMb: 608, cpuMillis: 500, storageGb: 10 },
+  umami: { memoryMb: 800, cpuMillis: 750, storageGb: 10 },
 };
 
 export function runtimeReservation(appId: string) {
@@ -44,12 +48,37 @@ function secret(bytes = 24) {
   return randomBytes(bytes).toString("hex");
 }
 
+export function runtimeIngressNetwork(instance: Pick<ApplicationInstance, "containerProject">) {
+  if (!/^mos-[0-9a-f]{12}$/i.test(instance.containerProject)) throw new Error("Invalid managed application container project.");
+  return `${instance.containerProject}-ingress`;
+}
+
+function proxyService(instance: ApplicationInstance, internalPort: number, cpu = "0.025") {
+  return {
+    image: "caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+    container_name: `${instance.containerProject}-proxy`,
+    restart: "unless-stopped",
+    depends_on: { app: { condition: "service_started" } },
+    command: ["caddy", "reverse-proxy", "--from", ":8080", "--to", `app:${internalPort}`],
+    expose: ["8080"],
+    networks: ["ingress", "platform"],
+    labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id, "com.getsupers.role": "fixed-upstream-proxy" },
+    mem_limit: "32m",
+    cpus: cpu,
+    deploy: { resources: { limits: { memory: "32M", cpus: cpu } } },
+    read_only: true,
+    tmpfs: ["/data", "/config"],
+    security_opt: ["no-new-privileges:true"],
+  };
+}
+
 function base(instance: ApplicationInstance, options: ManifestOptions) {
   return {
     name: instance.containerProject,
     networks: {
       private: { internal: true },
-      platform: { external: true, name: options.platformNetwork },
+      ingress: { external: true, name: runtimeIngressNetwork(instance) },
+      platform: { external: true, name: options.platformNetworkName ?? "managed-oss-worker-platform" },
     },
   };
 }
@@ -68,9 +97,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 3000,
         healthPath: "/",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 3000, "0.05"),
             app: {
               image: "calcom/cal.com:v6.2.0@sha256:ace3bb1219fb7306585ab9f4d94d41af7ee064c343db0498173436bbe857bd49",
               container_name: primaryContainer,
@@ -92,11 +123,12 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
                 NODE_ENV: "production",
               },
               expose: ["3000"],
-              networks: ["private", "platform"],
+              networks: ["private", "ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "2560m",
+              cpus: "1.15",
               healthcheck: { test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000"], interval: "20s", timeout: "10s", retries: 30, start_period: "90s" },
-              deploy: { resources: { limits: { memory: "2560M" } } },
+              deploy: { resources: { limits: { memory: "2560M", cpus: "1.15" } } },
               security_opt: ["no-new-privileges:true"],
             },
             db: {
@@ -108,8 +140,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "384m",
+              cpus: "0.2",
               healthcheck: { test: ["CMD-SHELL", "pg_isready -U calcom -d calendso"], interval: "10s", timeout: "5s", retries: 18 },
-              deploy: { resources: { limits: { memory: "384M" } } },
+              deploy: { resources: { limits: { memory: "384M", cpus: "0.2" } } },
               security_opt: ["no-new-privileges:true"],
             },
             redis: {
@@ -121,8 +154,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "128m",
+              cpus: "0.1",
               healthcheck: { test: ["CMD", "keydb-cli", "ping"], interval: "10s", timeout: "5s", retries: 12 },
-              deploy: { resources: { limits: { memory: "128M" } } },
+              deploy: { resources: { limits: { memory: "128M", cpus: "0.1" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },
@@ -141,9 +175,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 3000,
         healthPath: "/api/health",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 3000, "0.05"),
             certificate: {
               image: "alpine/openssl:3.5.4@sha256:42c7389ef077aed0eb4e96d0abbd094083d701bbaff1313073b061c0c9cd8278",
               container_name: certificateContainer,
@@ -154,7 +190,8 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "64m",
-              deploy: { resources: { limits: { memory: "64M" } } },
+              cpus: "0.05",
+              deploy: { resources: { limits: { memory: "64M", cpus: "0.05" } } },
               security_opt: ["no-new-privileges:true"],
             },
             app: {
@@ -184,11 +221,12 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               },
               volumes: ["./certificate:/opt/documenso/certificates:ro"],
               expose: ["3000"],
-              networks: ["private", "platform"],
+              networks: ["private", "ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "1792m",
+              cpus: "0.7",
               healthcheck: { test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(async r=>{const j=await r.json();process.exit(r.ok&&j.status==='ok'?0:1)}).catch(()=>process.exit(1))"], interval: "20s", timeout: "10s", retries: 30, start_period: "90s" },
-              deploy: { resources: { limits: { memory: "1792M" } } },
+              deploy: { resources: { limits: { memory: "1792M", cpus: "0.7" } } },
               security_opt: ["no-new-privileges:true"],
             },
             db: {
@@ -200,8 +238,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "256m",
+              cpus: "0.2",
               healthcheck: { test: ["CMD-SHELL", "pg_isready -U documenso -d documenso"], interval: "10s", timeout: "5s", retries: 18 },
-              deploy: { resources: { limits: { memory: "256M" } } },
+              deploy: { resources: { limits: { memory: "256M", cpus: "0.2" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },
@@ -218,9 +257,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 9157,
         healthPath: "/health/ready",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 9157, "0.05"),
             permissions: {
               image: "alpine/openssl:3.5.4@sha256:42c7389ef077aed0eb4e96d0abbd094083d701bbaff1313073b061c0c9cd8278",
               container_name: `${containerPrefix}-permissions`,
@@ -230,7 +271,8 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "32m",
-              deploy: { resources: { limits: { memory: "32M" } } },
+              cpus: "0.025",
+              deploy: { resources: { limits: { memory: "32M", cpus: "0.025" } } },
               security_opt: ["no-new-privileges:true"],
             },
             app: {
@@ -250,20 +292,20 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
                 MONGO_URI: "mongodb://mongo:27017/heyform",
                 REDIS_HOST: "redis",
                 REDIS_PORT: "6379",
-                ...(options.googleOAuth ? {
-                  GOOGLE_LOGIN_CLIENT_ID: options.googleOAuth.clientId,
-                  GOOGLE_LOGIN_CLIENT_SECRET: options.googleOAuth.clientSecret,
-                  MANAGED_OAUTH_STATE_SECRET: options.googleOAuth.stateSecret,
-                  MANAGED_GOOGLE_CALLBACK_URL: options.googleOAuth.callbackUrl,
+                ...(options.googleOAuthBroker ? {
+                  MANAGED_GOOGLE_BROKER_START_URL: options.googleOAuthBroker.startUrl,
+                  MANAGED_OAUTH_ASSERTION_PUBLIC_KEY: options.googleOAuthBroker.assertionPublicKey,
+                  MANAGED_OAUTH_APPLICATION_ID: instance.id,
                 } : {}),
               },
               volumes: ["./uploads:/app/packages/server/static/upload", "./uploads:/app/packages/server/uploads"],
               expose: ["9157"],
-              networks: ["private", "platform"],
+              networks: ["private", "ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "768m",
+              cpus: "0.4",
               healthcheck: { test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9157/health/ready >/dev/null || exit 1"], interval: "15s", timeout: "5s", retries: 24, start_period: "45s" },
-              deploy: { resources: { limits: { memory: "768M" } } },
+              deploy: { resources: { limits: { memory: "768M", cpus: "0.4" } } },
               security_opt: ["no-new-privileges:true"],
             },
             mongo: {
@@ -275,8 +317,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "384m",
+              cpus: "0.2",
               healthcheck: { test: ["CMD-SHELL", "mongo --quiet --eval 'db.runCommand({ ping: 1 }).ok' | grep 1"], interval: "10s", timeout: "5s", retries: 18 },
-              deploy: { resources: { limits: { memory: "384M" } } },
+              deploy: { resources: { limits: { memory: "384M", cpus: "0.2" } } },
               security_opt: ["no-new-privileges:true"],
             },
             redis: {
@@ -288,8 +331,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "128m",
+              cpus: "0.075",
               healthcheck: { test: ["CMD", "keydb-cli", "ping"], interval: "10s", timeout: "5s", retries: 12 },
-              deploy: { resources: { limits: { memory: "128M" } } },
+              deploy: { resources: { limits: { memory: "128M", cpus: "0.075" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },
@@ -303,20 +347,25 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 3001,
         healthPath: "/",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
+        readiness: { path: "/api/entry-page", acceptedEntryPageTypes: ["entryPage"], rejectedEntryPageTypes: ["setup-database"] },
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 3001),
             app: {
               image: "louislam/uptime-kuma:2.3.2@sha256:9aeb4e51d038047f414309c77a1af553281ca535723cb88907d907269d0a908e",
               container_name: primaryContainer,
               restart: "unless-stopped",
+              environment: { UPTIME_KUMA_DB_TYPE: "sqlite" },
               volumes: ["./data:/app/data"],
               expose: ["3001"],
-              networks: ["platform"],
+              networks: ["ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "384m",
+              cpus: "0.225",
               healthcheck: { test: ["CMD", "extra/healthcheck"], interval: "15s", timeout: "5s", retries: 12 },
-              deploy: { resources: { limits: { memory: "384M" } } },
+              deploy: { resources: { limits: { memory: "384M", cpus: "0.225" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },
@@ -332,9 +381,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 9000,
         healthPath: "/health",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 9000),
             app: {
               image: "listmonk/listmonk:v6.2.0@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286",
               container_name: primaryContainer,
@@ -354,10 +405,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               },
               volumes: ["./uploads:/listmonk/uploads:rw"],
               expose: ["9000"],
-              networks: ["private", "platform"],
+              networks: ["private", "ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "320m",
-              deploy: { resources: { limits: { memory: "320M" } } },
+              cpus: "0.275",
+              deploy: { resources: { limits: { memory: "320M", cpus: "0.275" } } },
               security_opt: ["no-new-privileges:true"],
             },
             db: {
@@ -369,8 +421,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "256m",
+              cpus: "0.2",
               healthcheck: { test: ["CMD-SHELL", "pg_isready -U listmonk -d listmonk"], interval: "10s", timeout: "5s", retries: 12 },
-              deploy: { resources: { limits: { memory: "256M" } } },
+              deploy: { resources: { limits: { memory: "256M", cpus: "0.2" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },
@@ -386,9 +439,11 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
         internalPort: 3000,
         healthPath: "/api/heartbeat",
         primaryContainer,
+        proxyContainer: `${containerPrefix}-proxy`,
         compose: {
           ...base(instance, options),
           services: {
+            proxy: proxyService(instance, 3000),
             app: {
               image: "ghcr.io/umami-software/umami:3.3.1@sha256:fa32d116cf20cad52cbc3fad9a63b46e7fa02299d8f967168eb453d49c476b4a",
               container_name: primaryContainer,
@@ -401,11 +456,12 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
                 TWO_FACTOR_ENCRYPTION_KEY: secret(32),
               },
               expose: ["3000"],
-              networks: ["private", "platform"],
+              networks: ["private", "ingress"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "512m",
+              cpus: "0.525",
               healthcheck: { test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/heartbeat || exit 1"], interval: "10s", timeout: "5s", retries: 18 },
-              deploy: { resources: { limits: { memory: "512M" } } },
+              deploy: { resources: { limits: { memory: "512M", cpus: "0.525" } } },
               security_opt: ["no-new-privileges:true"],
             },
             db: {
@@ -417,8 +473,9 @@ export function buildRuntimeManifest(instance: ApplicationInstance, options: Man
               networks: ["private"],
               labels: { "com.getsupers.managed": "true", "com.getsupers.application-instance": instance.id },
               mem_limit: "256m",
+              cpus: "0.2",
               healthcheck: { test: ["CMD-SHELL", "pg_isready -U umami -d umami"], interval: "10s", timeout: "5s", retries: 12 },
-              deploy: { resources: { limits: { memory: "256M" } } },
+              deploy: { resources: { limits: { memory: "256M", cpus: "0.2" } } },
               security_opt: ["no-new-privileges:true"],
             },
           },

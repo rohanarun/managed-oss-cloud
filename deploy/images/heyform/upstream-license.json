@@ -1,0 +1,7 @@
+{
+  "baseImage": "heyform/community-edition:v3.0.1@sha256:d74d6605ed8bd3dcf3681dbfe9e39d4c5a2d67de87fd2f3964bf9460aeede911",
+  "license": "AGPL-3.0-only",
+  "licenseUrl": "https://github.com/heyform/heyform/blob/v3.0.1/LICENSE",
+  "upstreamSourceUrl": "https://github.com/heyform/heyform/tree/v3.0.1",
+  "modifiedSourceUrl": "https://github.com/rohanarun/managed-oss-cloud/tree/main/deploy/images/heyform"
+}

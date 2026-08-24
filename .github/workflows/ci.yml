@@ -9,11 +9,39 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  terraform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.15.9
+      - run: terraform fmt -check -recursive infra/google-cloud
+      - run: terraform -chdir=infra/google-cloud init -backend=false
+      - run: terraform -chdir=infra/google-cloud validate
+      - run: terraform -chdir=infra/google-cloud test
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: managed_oss_test
+          POSTGRES_USER: managed_oss_test
+          POSTGRES_PASSWORD: managed_oss_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U managed_oss_test -d managed_oss_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://managed_oss_test:managed_oss_test@127.0.0.1:5432/managed_oss_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -21,3 +49,9 @@ jobs:
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
+      - run: npm run verify:mcp
+      - run: npm run audit:licenses
+      - run: deploy/google-cloud/backup/tests/verify-backup-contracts.sh
+      - run: deploy/google-cloud/readiness/tests/verify-readiness-contracts.sh
+      - run: deploy/google-cloud/provenance/tests/verify-provenance-contracts.sh
+      - run: deploy/google-cloud/tests/verify-caddy-admin-isolation.sh

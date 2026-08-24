@@ -1,16 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { verifyDomain, type DomainResolver } from "../src/server/domain-verification";
+import { hostnameOwnershipInstructions, newHostnameClaim } from "../src/server/hostname-claims";
+
+const ownership = () => hostnameOwnershipInstructions(newHostnameClaim({ hostname: "status.example.com", surface: "application", ownerUserId: "11111111-1111-4111-8111-111111111111", resourceId: "22222222-2222-4222-8222-222222222222" }, ["apps.getsupers.com"]), "apps.getsupers.com");
 
 describe("custom domain verification", () => {
   it("accepts the exact CNAME target", async () => {
-    const resolver: DomainResolver = { resolveCname: async () => ["uptime.apps.getsupers.com."], resolve4: async () => [] };
-    expect(await verifyDomain("status.example.com", "uptime.apps.getsupers.com", "34.44.230.152", resolver)).toMatchObject({ verified: true, method: "CNAME" });
+    const expected = ownership();
+    const resolver: DomainResolver = { resolveCname: async () => [`${expected.cname.value}.`], resolveTxt: async () => [] };
+    expect(await verifyDomain(expected, resolver)).toMatchObject({ verified: true, method: "CNAME" });
   });
 
-  it("accepts a direct platform A record but rejects unrelated DNS", async () => {
-    const direct: DomainResolver = { resolveCname: async () => [], resolve4: async () => ["34.44.230.152"] };
-    expect(await verifyDomain("status.example.com", "uptime.apps.getsupers.com", "34.44.230.152", direct)).toMatchObject({ verified: true, method: "A" });
-    const wrong: DomainResolver = { resolveCname: async () => ["other.example.com"], resolve4: async () => ["192.0.2.2"] };
-    expect(await verifyDomain("status.example.com", "uptime.apps.getsupers.com", "34.44.230.152", wrong)).toMatchObject({ verified: false });
+  it("accepts the exact TXT challenge, including split DNS character strings", async () => {
+    const expected = ownership();
+    const split = Math.floor(expected.txt.value.length / 2);
+    const resolver: DomainResolver = { resolveCname: async () => [], resolveTxt: async () => [[expected.txt.value.slice(0, split), expected.txt.value.slice(split)]] };
+    expect(await verifyDomain(expected, resolver)).toMatchObject({ verified: true, method: "TXT" });
+  });
+
+  it("rejects A-only routing and never consults address records", async () => {
+    const expected = ownership();
+    const resolve4 = vi.fn(async () => ["34.44.230.152"]);
+    const resolver: DomainResolver = { resolveCname: async () => [], resolveTxt: async () => [], resolve4 };
+    expect(await verifyDomain(expected, resolver)).toMatchObject({ verified: false, method: "none" });
+    expect(resolve4).not.toHaveBeenCalled();
+  });
+
+  it("rejects another claim's TXT and CNAME values", async () => {
+    const expected = ownership();
+    const other = ownership();
+    const resolver: DomainResolver = { resolveCname: async () => [other.cname.value], resolveTxt: async () => [[other.txt.value]] };
+    expect(await verifyDomain(expected, resolver)).toMatchObject({ verified: false, method: "none" });
   });
 });

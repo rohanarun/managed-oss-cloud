@@ -1,0 +1,34 @@
+[Unit]
+Description=Managed OSS control-plane PostgreSQL backup
+Documentation=https://github.com/rohanarun/managed-oss-cloud/tree/main/deploy/google-cloud/backup
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+ConditionPathExists=/opt/managed-oss/config/docker-compose.yml
+ConditionPathExists=/opt/managed-oss/config/control-plane-backup.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/opt/managed-oss/config/control-plane-backup.env
+ExecStart=/usr/local/sbin/managed-oss-control-plane-backup
+TimeoutStartSec=45min
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/managed-oss/config
+ReadWritePaths=/opt/managed-oss/backups/control-plane
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+StandardOutput=journal
+StandardError=journal

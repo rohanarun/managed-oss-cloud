@@ -1,0 +1,12 @@
+[Unit]
+Description=Block Docker bridge access to Google Cloud metadata
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/managed-oss/security/metadata-firewall.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

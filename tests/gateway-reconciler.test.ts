@@ -3,11 +3,14 @@ import { renderGatewayCaddyfile } from "../src/server/gateway-reconciler";
 
 describe("gateway configuration", () => {
   it("routes customer hostnames to private workers while preserving the app host", () => {
-    const rendered = renderGatewayCaddyfile([{ hostname: "calendar.customer.example", upstreamHost: "cal-123.apps.example.com", workerPrivateAddress: "10.70.0.12", workerNodeId: "worker-three" }], { controlPlaneDomain: "cloud.getsupers.com", platformIpv4: "34.44.230.152", controlPlaneUpstream: "control-plane:8787" });
+    const rendered = renderGatewayCaddyfile([{ hostname: "calendar.customer.example", upstreamHost: "cal-123.apps.example.com", workerPrivateAddress: "10.70.0.12", workerNodeId: "worker-three" }], { controlPlaneDomain: "cloud.getsupers.com", platformIpv4: "34.44.230.152", controlPlaneUpstream: "control-plane:8787", controlPlaneHosts: ["links.customer.example"] });
     expect(rendered).toContain("calendar.customer.example");
     expect(rendered).toContain("reverse_proxy http://10.70.0.12:8080");
     expect(rendered).toContain("header_up Host cal-123.apps.example.com");
     expect(rendered).toContain("cloud.getsupers.com");
+    expect(rendered).toContain("links.customer.example {\n  encode zstd gzip\n  reverse_proxy control-plane:8787");
+    expect(rendered).toContain("admin 127.0.0.1:2019");
+    expect(rendered).not.toContain("admin 0.0.0.0:2019");
   });
 
   it("rejects public worker addresses and duplicate hostnames", () => {
@@ -16,5 +19,6 @@ describe("gateway configuration", () => {
       { hostname: "app.example.com", upstreamHost: "one.apps.example.com", workerPrivateAddress: "10.0.0.1", workerNodeId: "one" },
       { hostname: "app.example.com", upstreamHost: "two.apps.example.com", workerPrivateAddress: "10.0.0.2", workerNodeId: "two" },
     ], { controlPlaneUpstream: "control-plane:8787" })).toThrow(/Duplicate/);
+    expect(() => renderGatewayCaddyfile([{ hostname: "links.example.com", upstreamHost: "app.apps.example.com", workerPrivateAddress: "10.0.0.1", workerNodeId: "one" }], { controlPlaneUpstream: "control-plane:8787", controlPlaneHosts: ["links.example.com"] })).toThrow(/Duplicate/);
   });
 });

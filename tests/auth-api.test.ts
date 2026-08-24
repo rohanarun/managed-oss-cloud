@@ -21,21 +21,27 @@ describe("account and server boundaries", () => {
 
     const domain = await agent.post(`/api/installations/${create.body.installation.id}/domains`).send({ domain: "mail.example.com" });
     expect(domain.status).toBe(200);
-    expect(domain.body.dns.type).toBe("CNAME");
+    expect(domain.body.dns.cname.type).toBe("CNAME");
+    expect(domain.body.dns.txt.type).toBe("TXT");
 
-    const blockedClone = await agent.post(`/api/installations/${create.body.installation.id}/applications`).send({ appId: "listmonk" });
+    const blockedClone = await agent.post(`/api/installations/${create.body.installation.id}/applications`).set("Idempotency-Key", "clone-blocked-request-0001").send({ appId: "listmonk" });
     expect(blockedClone.status).toBe(409);
 
     const upgrade = await agent.post(`/api/installations/${create.body.installation.id}/upgrade`).send({ plan: "scale" });
     expect(upgrade.status).toBe(200);
     expect(upgrade.body.installation.plan).toBe("scale");
 
-    const clone = await agent.post(`/api/installations/${create.body.installation.id}/applications`).send({ appId: "listmonk" });
+    const clone = await agent.post(`/api/installations/${create.body.installation.id}/applications`).set("Idempotency-Key", "clone-success-request-0001").send({ appId: "listmonk" });
     expect(clone.status).toBe(201);
     expect(clone.body.application.hostname).not.toBe(create.body.installation.applications[0].hostname);
     const dashboard = await agent.get("/api/dashboard");
     expect(dashboard.body.installations[0].applications).toHaveLength(2);
     expect(dashboard.body.installations[0].appIds).toEqual(["listmonk", "listmonk"]);
+    const replay = await agent.post(`/api/installations/${create.body.installation.id}/applications`).set("Idempotency-Key", "clone-success-request-0001").send({ appId: "listmonk" });
+    expect(replay.status).toBe(200);
+    expect(replay.body.replayed).toBe(true);
+    expect(replay.body.application.id).toBe(clone.body.application.id);
+    expect((await agent.get("/api/dashboard")).body.installations[0].applications).toHaveLength(2);
   });
 
   it("keeps unauthenticated and cross-account requests out", async () => {

@@ -57,7 +57,7 @@ export interface Installation {
   appIds: string[];
   name: string;
   plan: string;
-  state: "planned" | "awaiting_payment" | "provisioning" | "live" | "failed";
+  state: "planned" | "awaiting_payment" | "provisioning" | "live" | "failed" | "suspended";
   hostname: string;
   customDomains: string[];
   applications?: ApplicationInstance[];
@@ -84,11 +84,18 @@ export interface ApplicationInstance {
   updatedAt: string;
 }
 
+export interface HostnameOwnershipInstructions {
+  claimId: string;
+  txt: { type: "TXT"; name: string; value: string };
+  cname: { type: "CNAME"; name: string; value: string };
+}
+
 export interface CustomDomain {
   id: string;
   applicationInstanceId: string;
   domain: string;
   verificationStatus: "awaiting-dns" | "verified" | "active" | "failed";
+  ownership: HostnameOwnershipInstructions;
   lastCheckedAt?: string;
 }
 
@@ -122,6 +129,16 @@ export interface WorkerNode {
   updatedAt: string;
 }
 
+export type WorkerNodeMode = "active" | "draining";
+
+export interface WorkerNodeActivity {
+  node: WorkerNode;
+  mode: WorkerNodeMode | "offline";
+  runningJobs: Array<Pick<ProvisioningJob, "id" | "installationId" | "action" | "status" | "workerNodeId" | "leaseExpiresAt" | "createdAt">>;
+  assignedApplications: Array<Pick<ApplicationInstance, "id" | "installationId" | "appId" | "state">>;
+  safeToReplaceAgent: boolean;
+}
+
 export interface AgentJob extends ProvisioningJob {
   applications: ApplicationInstance[];
 }
@@ -129,8 +146,18 @@ export interface AgentJob extends ProvisioningJob {
 export interface GatewayRoute {
   hostname: string;
   upstreamHost: string;
+  ownership?: HostnameOwnershipInstructions;
   workerPrivateAddress: string;
   workerNodeId: string;
+  applicationInstanceId?: string;
+  appId?: string;
+}
+
+export interface WorkerNodeRoute {
+  applicationInstanceId: string;
+  hostname: string;
+  containerProject: string;
+  appId: string;
 }
 
 export interface BackupRecord {

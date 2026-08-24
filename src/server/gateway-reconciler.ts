@@ -13,11 +13,20 @@ function privateAddress(address: string) {
   return address;
 }
 
-export function renderGatewayCaddyfile(routes: GatewayRoute[], options: { controlPlaneDomain?: string; platformIpv4?: string; controlPlaneUpstream: string }) {
-  const blocks = ["{\n  admin 0.0.0.0:2019\n}"];
+export function renderGatewayCaddyfile(routes: GatewayRoute[], options: { controlPlaneDomain?: string; platformIpv4?: string; controlPlaneUpstream: string; controlPlaneHosts?: string[] }) {
+  const blocks = ["{\n  admin 127.0.0.1:2019\n}"];
   if (options.controlPlaneDomain) blocks.push(`${caddyHost(options.controlPlaneDomain)} {\n  encode zstd gzip\n  reverse_proxy ${options.controlPlaneUpstream}\n}`);
   if (options.platformIpv4) blocks.push(`http://${options.platformIpv4} {\n  encode zstd gzip\n  reverse_proxy ${options.controlPlaneUpstream}\n}`);
   const unique = new Set<string>();
+  for (const customHost of [...(options.controlPlaneHosts ?? [])].sort()) {
+    const hostname = caddyHost(customHost);
+    if (hostname === options.controlPlaneDomain || unique.has(hostname)) throw new Error(`Duplicate gateway route: ${hostname}`);
+    unique.add(hostname);
+    blocks.push(`${hostname} {
+  encode zstd gzip
+  reverse_proxy ${options.controlPlaneUpstream}
+}`);
+  }
   for (const route of [...routes].sort((left, right) => left.hostname.localeCompare(right.hostname))) {
     const hostname = caddyHost(route.hostname);
     if (unique.has(hostname)) throw new Error(`Duplicate gateway route: ${hostname}`);
@@ -31,7 +40,7 @@ async function fetchRoutes() {
   if (!config.GATEWAY_RECONCILER_TOKEN) throw new Error("Gateway reconciler requires GATEWAY_RECONCILER_TOKEN.");
   const response = await fetch(`${config.GATEWAY_CONTROL_PLANE_URL.replace(/\/$/, "")}/api/internal/gateway/routes`, { headers: { authorization: `Bearer ${config.GATEWAY_RECONCILER_TOKEN}` } });
   if (!response.ok) throw new Error(`Gateway route discovery failed with ${response.status}.`);
-  return (await response.json() as { routes: GatewayRoute[] }).routes;
+  return await response.json() as { routes: GatewayRoute[]; controlPlaneHosts?: string[] };
 }
 
 async function loadCaddyfile(caddyfile: string) {
@@ -43,8 +52,8 @@ async function run() {
   let lastApplied = "";
   while (true) {
     try {
-      const routes = await fetchRoutes();
-      const rendered = renderGatewayCaddyfile(routes, { controlPlaneDomain: config.CONTROL_PLANE_DOMAIN, platformIpv4: config.PLATFORM_IPV4, controlPlaneUpstream: config.CONTROL_PLANE_UPSTREAM });
+      const discovered = await fetchRoutes();
+      const rendered = renderGatewayCaddyfile(discovered.routes, { controlPlaneDomain: config.CONTROL_PLANE_DOMAIN, platformIpv4: config.PLATFORM_IPV4, controlPlaneUpstream: config.CONTROL_PLANE_UPSTREAM, controlPlaneHosts: discovered.controlPlaneHosts });
       if (rendered !== lastApplied) { await loadCaddyfile(rendered); lastApplied = rendered; }
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : "Gateway reconciliation failed."}\n`);

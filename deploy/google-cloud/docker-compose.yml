@@ -8,7 +8,6 @@ services:
     environment:
       POSTGRES_DB: opendock
       POSTGRES_USER: opendock
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - /opt/managed-oss/apps/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -16,6 +15,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    mem_limit: 512m
+    cpus: "0.5"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
 
   control-plane:
     image: ${CONTROL_PLANE_IMAGE}
@@ -33,25 +39,237 @@ services:
         condition: service_healthy
     env_file:
       - runtime.env
+      - control-plane.env
+      - gateway.env
+      - oauth.env
       - billing.env
+      - database-control.env
+      - database-suite.env
     environment:
       PORT: 8787
-      DATABASE_URL: postgresql://opendock:${POSTGRES_PASSWORD}@database:5432/opendock
       DATABASE_SSL: "false"
     expose:
       - "8787"
+    healthcheck:
+      test: ["CMD", "node", "--input-type=module", "-e", "const response=await fetch('http://127.0.0.1:8787/api/health',{signal:AbortSignal.timeout(5000)});const payload=await response.json();if(!response.ok||payload.ok!==true||payload.persistence!=='postgres'||payload.mode!==process.env.PROVISIONING_MODE)process.exit(1)"]
+      interval: 10s
+      timeout: 7s
+      retries: 30
+      start_period: 20s
+    mem_limit: 768m
+    cpus: "0.75"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "0.75"
+
+  migrate:
+    profiles: ["operations"]
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: "no"
+    command: ["npm", "run", "migrate"]
+    depends_on:
+      database:
+        condition: service_healthy
+    env_file:
+      - runtime.env
+      - database-migrator.env
+    environment:
+      DATABASE_SSL: "false"
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: "0.2"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.2"
+
+  subscription-reconciler:
+    profiles: ["billing"]
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    command: ["npm", "run", "reconcile:subscriptions:worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+    env_file:
+      - runtime.env
+      - billing.env
+      - database-control.env
+    environment:
+      DATABASE_SSL: "false"
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: "0.2"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.2"
+
+  ai-worker:
+    profiles: ["ai"]
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    command: ["npm", "run", "ai-worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+    env_file:
+      - runtime.env
+      - database-ai.env
+    environment:
+      DATABASE_SSL: "false"
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: "0.5"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  ollama:
+    profiles: ["local-ai"]
+    image: ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
+    restart: unless-stopped
+    init: true
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_CONTEXT_LENGTH: ${LOCAL_AI_CONTEXT_LENGTH:-8192}
+      OLLAMA_KEEP_ALIVE: ${LOCAL_AI_KEEP_ALIVE:-5m}
+      OLLAMA_MAX_LOADED_MODELS: ${LOCAL_AI_MAX_LOADED_MODELS:-1}
+      OLLAMA_NUM_PARALLEL: ${LOCAL_AI_NUM_PARALLEL:-1}
+    expose:
+      - "11434"
+    volumes:
+      - /opt/managed-oss/apps/ollama:/root/.ollama
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    mem_limit: 6g
+    cpus: "1.5"
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: "1.5"
+
+  ollama-model-init:
+    profiles: ["local-ai"]
+    image: ollama/ollama:0.32.5@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${LOCAL_AI_MODEL:-qwen3:4b}
+      OLLAMA_MODEL_DIGEST: ${LOCAL_AI_MODEL_DIGEST:-359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        ollama pull "$${OLLAMA_MODEL}"
+        ollama show "$${OLLAMA_MODEL}" >/dev/null
+        actual_digest="$$(ollama list | awk -v model="$${OLLAMA_MODEL}" 'NR > 1 && $$1 == model { print $$2; exit }')"
+        test -n "$${actual_digest}" || { echo "Model digest was not reported for $${OLLAMA_MODEL}" >&2; exit 1; }
+        case "$${OLLAMA_MODEL_DIGEST}" in "$${actual_digest}"*) ;; *) echo "Model digest mismatch for $${OLLAMA_MODEL}: got $${actual_digest}" >&2; exit 1 ;; esac
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: "0.2"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.2"
+
+  local-ai-worker:
+    profiles: ["local-ai"]
+    image: ${CONTROL_PLANE_IMAGE}
+    restart: unless-stopped
+    command: ["npm", "run", "ai-worker"]
+    depends_on:
+      database:
+        condition: service_healthy
+      ollama-model-init:
+        condition: service_completed_successfully
+    env_file:
+      - runtime.env
+      - database-ai.env
+    environment:
+      DATABASE_SSL: "false"
+      AI_MODE: openai-compatible
+      AI_BASE_URL: http://ollama:11434/v1
+      AI_MODEL: ${LOCAL_AI_MODEL:-qwen3:4b}
+      AI_API_KEY: ""
+    user: node
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    cpus: "0.3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.3"
 
   gateway-reconciler:
     image: ${CONTROL_PLANE_IMAGE}
     restart: unless-stopped
     command: ["npm", "run", "gateway"]
+    network_mode: service:caddy
     depends_on:
       - control-plane
       - caddy
+    env_file:
+      - gateway.env
     environment:
-      GATEWAY_RECONCILER_TOKEN: ${GATEWAY_RECONCILER_TOKEN}
       GATEWAY_CONTROL_PLANE_URL: http://control-plane:8787
-      CADDY_ADMIN_URL: http://caddy:2019/load
+      CADDY_ADMIN_URL: http://127.0.0.1:2019/load
       CONTROL_PLANE_DOMAIN: ${CONTROL_PLANE_DOMAIN}
       CONTROL_PLANE_UPSTREAM: control-plane:8787
       PLATFORM_IPV4: ${PLATFORM_IPV4}
@@ -63,6 +281,13 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    mem_limit: 128m
+    cpus: "0.1"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.1"
 
   caddy:
     image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
@@ -77,3 +302,10 @@ services:
       - /opt/managed-oss/config/Caddyfile:/etc/caddy/Caddyfile:ro
       - /opt/managed-oss/apps/caddy-data:/data
       - /opt/managed-oss/apps/caddy-config:/config
+    mem_limit: 128m
+    cpus: "0.1"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.1"

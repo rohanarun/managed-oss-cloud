@@ -1,0 +1,15 @@
+{
+  "rule": [
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "age": 35,
+        "matchesPrefix": [
+          "control-plane/"
+        ]
+      }
+    }
+  ]
+}
