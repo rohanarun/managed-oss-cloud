@@ -8,12 +8,14 @@ Managed OSS Cloud is an MIT-licensed control plane and an original AI-native bus
 
 The source registry in this checkout contains **37 first-party modules, 407 typed actions, and 447 MCP tools**. The MCP total is generated as three suite-level tools, one read-only list tool for each module, and one separately named tool for every typed action. Generic create/update/AI bypass tools are intentionally absent.
 
-The hosted control plane is running the exact digest-pinned v0.4.0 release. Live checks on 2026-08-24 proved:
+The hosted control plane is running the exact digest-pinned v0.4.0 release, while the private provisioning worker runs the provenance-verified v0.4.1 network-reconciliation hotfix. Live checks on 2026-08-24 proved:
 
 - `GET https://cloud.getsupers.com/api/health` reports PostgreSQL persistence with `mode: "dry-run"`;
 - `GET https://cloud.getsupers.com/api/config` reports `billingReady: false` and the $7/$50/$200 plan catalogue;
 - `GET https://cloud.getsupers.com/api/suite/catalog` returns all 37 first-party modules as JSON; and
-- `GET https://cloud.getsupers.com/api/suite/actions` returns all 407 uniquely named typed actions.
+- `GET https://cloud.getsupers.com/api/suite/actions` returns all 407 uniquely named typed actions;
+- all 16 independent product CLIs and MCP servers authenticate against the same live workspace; and
+- a controlled private-worker reboot restored the exact v0.4.1 image, metadata firewall proof, fresh heartbeat, HeyForm route, and four healthy Uptime Kuma routes without public worker ingress or ephemeral disks.
 
 The managed suite and account control plane are therefore live, but customer charging and one-click provisioning remain deliberately disabled. The hosted deployment preserves `PROVISIONING_MODE=dry-run`, `BILLING_MODE=disabled`, measurement-only storage accounting, and disabled subscription reconciliation. Those gates must not be presented as production-ready billing or provisioning until hard storage quotas, paid-capacity compensation, provider adapters, and the remaining live acceptance work pass.
 
