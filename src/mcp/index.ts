@@ -3,12 +3,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { suiteModules, suiteToolName } from "../shared/suite.js";
+import { managedOssPackageVersion } from "../shared/package-version.js";
 import { suiteActionRequiredScope, suiteActionToolName, suiteActionsByModule } from "../shared/suite-actions.js";
 import { clientFromEnvironment } from "../cli/client.js";
 import { suiteActionMcpInput, suiteActionMcpInputShape } from "./action-schema.js";
 
 const client = clientFromEnvironment();
-const server = new McpServer({ name: "supersuite", version: "0.2.0" });
+const server = new McpServer({ name: "supersuite", version: managedOssPackageVersion() });
 const output = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], structuredContent: value as Record<string, unknown> });
 
 server.registerTool("suite_catalog", {

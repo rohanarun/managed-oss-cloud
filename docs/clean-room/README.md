@@ -1,8 +1,8 @@
 # Clean-room first-party suite
 
-This directory records the product and security contracts for 27 original, first-party modules released under this repository's MIT license. They capture user-visible business behavior without importing reference-product source code, schemas, tests, interface copy, visual assets, trademarks, or internal architecture.
+This directory records the product and security contracts for 37 original, first-party modules released under this repository's MIT license. They capture user-visible business behavior without importing reference-product source code, schemas, tests, interface copy, visual assets, trademarks, or internal architecture.
 
-The source registry currently contains 300 typed actions. The count below is derived from `suiteModules` and `suiteActions`, not from documentation estimates. Reference products identify only a broad business category; the first-party modules do not claim API, data-model, or UI compatibility.
+The source registry currently contains 407 typed actions. The count below is derived from `suiteModules` and `suiteActions`, not from documentation estimates. Reference products identify only a broad business category; the first-party modules do not claim API, data-model, or UI compatibility.
 
 ## Module index
 
@@ -30,14 +30,24 @@ The source registry currently contains 300 typed actions. The count below is der
 | Specialist | `flags` | [Feature flags and experiments](feature-flags-experiments.md) | 17 | Starter, $7/month |
 | Agreement | `esign` | [E-signature workflow](esign/product-spec.md) | 14 | Starter, $7/month |
 | Email | `email` | [Letterline](email/README.md) | 16 | Starter, $7/month |
+| Shared business graph | `tables` | [SchemaDeck](additive-business-suite.md#schemadeck) | 9 | Starter, $7/month |
+| Shared business graph | `meetings` | [Recall Room](additive-business-suite.md#recall-room) | 9 | Scale, $50/month |
+| Shared business graph | `insights` | [Proofline Insights](additive-business-suite.md#proofline-insights) | 9 | Scale, $50/month |
+| Shared business graph | `learning` | [Learning Forge](additive-business-suite.md#learning-forge) | 9 | Scale, $50/month |
+| Shared business graph | `community` | [Circlefield](additive-business-suite.md#circlefield) | 10 | Scale, $50/month |
+| Governed operations | `events` | [GatherLedger](extended-business-suite.md#gatherledger) | 12 | Scale, $50/month |
+| Governed operations | `people` | [PeopleWeave](extended-business-suite.md#peopleweave) | 13 | Scale, $50/month |
+| Governed operations | `metering` | [MeterProof](extended-business-suite.md#meterproof) | 12 | Fleet, $200/month |
+| Governed operations | `assurance` | [AssureGraph](extended-business-suite.md#assuregraph) | 12 | Fleet, $200/month |
+| Governed operations | `live` | [LiveForum](extended-business-suite.md#liveforum) | 12 | Fleet, $200/month |
 | Higher resource | `projects` | [Premium suite](premium-product-spec.md) | 8 | Scale, $50/month |
 | Higher resource | `drive` | [Premium suite](premium-product-spec.md) | 8 | Scale, $50/month |
 | Higher resource | `channels` | [Premium suite](premium-product-spec.md) | 8 | Scale, $50/month |
 | Higher resource | `operations` | [Premium suite](premium-product-spec.md) | 9 | Fleet, $200/month |
 | Higher resource | `assistant` | [Premium suite](premium-product-spec.md) | 9 | Fleet, $200/month |
-|  | **Total** |  | **300** |  |
+|  | **Total** |  | **407** |  |
 
-Hosted plan gates are explicit in the source registry: Starter unlocks 22 modules, Scale unlocks those plus Projects, Drive, and Channels, and Fleet unlocks all 27. A self-hosted operator may select `SUITE_ENTITLEMENT_MODE=unrestricted` to expose all modules without Stripe. Plan labels still express the hosted capacity and support boundary; they do not change the MIT licence.
+Hosted plan gates are explicit in the source registry: Starter unlocks 23 modules, Scale unlocks 32 modules, and Fleet unlocks all 37. A self-hosted operator may select `SUITE_ENTITLEMENT_MODE=unrestricted` to expose all modules without Stripe. Plan labels still express the hosted capacity and support boundary; they do not change the MIT licence.
 
 ## Shared product contract
 
@@ -68,7 +78,7 @@ The shared graph is the current system of record. Domain engines must therefore 
 
 - The HTTP API is the single behavioral implementation. Web UI, CLI, and MCP invoke the same authorization and validation paths.
 - The executable is `supersuite`. Registry inspection uses `modules`, `actions`, and `action-help`; remote behavior uses `workspace`, `enable`, `list`, `ai-status`, and `action <module> <action> <json-input>`.
-- The MCP server exposes three suite-level tools, one namespaced list tool per module, and one namespaced typed tool per action: 330 tools in the current registry.
+- The MCP server exposes three suite-level tools, one namespaced list tool per module, and one namespaced typed tool per action: 447 tools in the current registry.
 - Read and mutation scopes are separate. Destructive, financial, hiring-decision, policy-publishing, and public-share mutations require explicit mutation scopes and may require human confirmation.
 - MCP tools never accept arbitrary SQL, shell commands, template code, provider credentials, or unrestricted file paths.
 - Generic record creation and generic AI requests are not exposed by CLI or MCP. All mutations and model requests use a registered action and the same HTTP/engine validation path.

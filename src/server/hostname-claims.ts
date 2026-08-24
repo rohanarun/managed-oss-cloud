@@ -98,6 +98,14 @@ export function hostnameOwnershipInstructions(claim: Pick<HostnameClaim, "id" | 
 export class MemoryHostnameClaimRegistry {
   private claims = new Map<string, HostnameClaim>();
 
+  snapshot() {
+    return structuredClone([...this.claims.entries()]);
+  }
+
+  restore(snapshot: Array<[string, HostnameClaim]>) {
+    this.claims = new Map(structuredClone(snapshot));
+  }
+
   claim(input: HostnameClaimInput, platformSuffixes: string[]) {
     let claim = newHostnameClaim(input, platformSuffixes);
     if (this.claims.has(claim.hostname)) return undefined;

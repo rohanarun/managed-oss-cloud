@@ -4,6 +4,7 @@ import { esignAction, esignActions, type EsignActionDefinition } from "../shared
 import type { SuiteStore } from "./suite-store.js";
 import { esignPromptDigest, esignPromptPolicy } from "./prompts/esign.js";
 import { suiteStorageAccounting } from "../shared/suite-quotas.js";
+import { canReadSuiteRecord } from "./suite-record-visibility.js";
 
 export interface EsignAuthorization {
   userId: string;
@@ -61,7 +62,8 @@ const defaults: EsignEngineDependencies = {
 const moduleId = "esign";
 const receiptType = "esign-command-receipt";
 const auditType = "esign-ai-request-audit";
-const maxRecords = 100_000;
+export const esignBoundedScanLimit = 100_000;
+const approvalFreshnessMs = 24 * 60 * 60 * 1_000;
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -160,15 +162,21 @@ async function update(store: SuiteStore, auth: EsignAuthorization, record: Suite
   return updated;
 }
 
+function canRead(auth: EsignAuthorization, record: SuiteRecord) {
+  return canReadSuiteRecord({ userId: auth.userId, workspaceId: auth.workspaceId, role: auth.role }, record);
+}
+
 async function owned(store: SuiteStore, auth: EsignAuthorization, id: unknown, recordType?: string, label = "recordId") {
   if (typeof id !== "string") throw new Error(`${label} must be a record ID.`);
   const record = await store.getRecord(auth.userId, id);
-  if (!record || record.moduleId !== moduleId || (recordType && record.recordType !== recordType)) throw new Error(`${label.replace(/Id$/, "")} not found in this workspace.`);
+  if (!record || !canRead(auth, record) || record.moduleId !== moduleId || (recordType && record.recordType !== recordType)) throw new Error(`${label.replace(/Id$/, "")} not found in this workspace.`);
   return record;
 }
 
 async function list(store: SuiteStore, auth: EsignAuthorization, recordType?: string) {
-  return store.listRecords(auth.userId, { moduleId, recordType, limit: maxRecords });
+  const records = await store.listRecords(auth.userId, { moduleId, recordType, limit: esignBoundedScanLimit + 1 });
+  if (records.length > esignBoundedScanLimit) throw new Error(`The bounded esign/${recordType ?? "all-records"} scan is saturated; an indexed or paginated SuiteStore lookup is required before this action can run safely.`);
+  return records.filter((record) => canRead(auth, record));
 }
 
 async function authorize(store: SuiteStore, auth: EsignAuthorization, action: EsignActionDefinition) {
@@ -187,7 +195,13 @@ function approval(input: Record<string, unknown>, auth: EsignAuthorization, now:
   if (!candidate || candidate.approved !== true || candidate.approvedBy !== auth.userId || !candidate.reason?.trim() || !/^[A-Za-z0-9._:-]{16,200}$/.test(candidate.decisionId ?? "")) throw new Error("An attributable, reasoned, uniquely identified human approval is required when dryRun is false.");
   const approvedAt = new Date(candidate.approvedAt);
   if (!Number.isFinite(approvedAt.getTime()) || approvedAt.getTime() > now.getTime() + 5 * 60_000) throw new Error("The approval clock is invalid or in the future.");
+  if (approvedAt.getTime() < now.getTime() - approvalFreshnessMs) throw new Error("The human approval is stale; approval must be no more than 24 hours old.");
   return { ...candidate, approvedAt: approvedAt.toISOString(), reason: candidate.reason.trim() };
+}
+
+async function assertApprovalDecisionUnused(store: SuiteStore, auth: EsignAuthorization, approved: EsignApproval) {
+  const reused = await store.findApprovalDecisionReceipt(auth.userId, approved.decisionId);
+  if (reused) throw new Error("The human approval decision was already used by another e-signature command.");
 }
 
 function requestInputForDigest(input: Record<string, unknown>) {
@@ -195,13 +209,14 @@ function requestInputForDigest(input: Record<string, unknown>) {
 }
 
 async function replay(store: SuiteStore, auth: EsignAuthorization, action: EsignActionDefinition, key: string, requestHash: string) {
-  const receipt = (await list(store, auth, receiptType)).find((record) => record.data.idempotencyKey === key);
+  const receipt = await store.findCommandReceipt(auth.userId, { recordType: receiptType, moduleId, actionId: action.id, idempotencyKey: key });
   if (!receipt) return undefined;
+  if (receipt.data.actorUserId !== auth.userId) throw new Error("The e-signature idempotency key belongs to another actor.");
   if (receipt.data.actionId !== action.id || receipt.data.requestHash !== requestHash) throw new Error("The idempotency key was already used for a different e-signature command.");
   const records: SuiteRecord[] = [];
   for (const id of Array.isArray(receipt.data.resultRecordIds) ? receipt.data.resultRecordIds : []) {
     const record = await store.getRecord(auth.userId, String(id));
-    if (record) records.push(record);
+    if (record && canRead(auth, record)) records.push(record);
   }
   const aiAction = typeof receipt.data.aiActionId === "string" ? await store.getAiAction(auth.userId, receipt.data.aiActionId) : undefined;
   const audit = { ...(receipt.data.audit as Record<string, unknown>), receiptId: receipt.id, requestHash, replayed: true, ...(action.id === "signer-session-issue" ? { privateOutputUnavailableOnReplay: true } : {}) };
@@ -209,7 +224,10 @@ async function replay(store: SuiteStore, auth: EsignAuthorization, action: Esign
 }
 
 async function saveReceipt(store: SuiteStore, auth: EsignAuthorization, action: EsignActionDefinition, key: string, requestHash: string, execution: EsignExecutionResult) {
-  const receipt = await create(store, auth, { moduleId, recordType: receiptType, title: `${action.id} · ${key.slice(0, 48)}`, state: "recorded", data: { actionId: action.id, idempotencyKey: key, requestHash, resultRecordIds: execution.records.map((record) => record.id), aiActionId: execution.aiAction?.id, audit: execution.audit, actorUserId: auth.userId, workspaceId: auth.workspaceId, immutable: true, containsPlaintextSessionToken: false } });
+  const approvalBinding = typeof execution.audit.approvalDecisionId === "string"
+    ? { approvalDecisionId: execution.audit.approvalDecisionId, approvedBy: execution.audit.approvedBy, approvedAt: execution.audit.approvedAt }
+    : {};
+  const receipt = await create(store, auth, { moduleId, recordType: receiptType, title: `${action.id} · ${key.slice(0, 48)}`, state: "recorded", data: { actionId: action.id, idempotencyKey: key, requestHash, resultRecordIds: execution.records.map((record) => record.id), aiActionId: execution.aiAction?.id, audit: execution.audit, actorUserId: auth.userId, workspaceId: auth.workspaceId, ...approvalBinding, immutable: true, containsPlaintextSessionToken: false } });
   execution.audit = { ...execution.audit, receiptId: receipt.id, requestHash, replayed: false };
   return execution;
 }
@@ -263,8 +281,8 @@ function assertEnvelopeActive(envelope: SuiteRecord) {
 
 async function sessionForToken(store: SuiteStore, auth: EsignAuthorization, envelopeId: string, signerId: string, token: string, now: Date) {
   const tokenHash = hashText(token);
-  const session = (await list(store, auth, "signer-session")).find((record) => record.data.tokenHash === tokenHash);
-  if (!session || session.data.envelopeId !== envelopeId || session.data.signerId !== signerId) throw new Error("The signer session token is invalid for this envelope and signer.");
+  const session = await store.findSignerSessionByTokenHash(auth.userId, tokenHash);
+  if (!session || !canRead(auth, session) || session.moduleId !== moduleId || session.recordType !== "signer-session" || session.data.envelopeId !== envelopeId || session.data.signerId !== signerId) throw new Error("The signer session token is invalid for this envelope and signer.");
   if (session.state !== "active" || new Date(String(session.data.expiresAt)).getTime() <= now.getTime()) throw new Error("The signer session is not active.");
   return session;
 }
@@ -498,7 +516,7 @@ async function queueAi(store: SuiteStore, auth: EsignAuthorization, action: Esig
   const evidence: SuiteRecord[] = [];
   for (const recordId of input.evidenceIds as string[]) {
     const record = await store.getRecord(auth.userId, recordId);
-    if (!record) throw new Error("An AI evidence record was not found in this workspace.");
+    if (!record || !canRead(auth, record)) throw new Error("An AI evidence record was not found in this workspace.");
     if (!["esign", "drive", "knowledge"].includes(record.moduleId)) throw new Error("E-signature AI evidence must be an e-signature, private-file, or knowledge record selected from this workspace.");
     evidence.push(record);
   }
@@ -620,12 +638,13 @@ export async function executeEsignAction(store: SuiteStore, auth: EsignAuthoriza
     await authorize(store, auth, action);
     if (action.operation === "read") return executeCommand(store, auth, action, input, deps, false);
     const key = String(input.idempotencyKey);
-    const requestHash = digest({ workspaceId: auth.workspaceId, moduleId, actionId: action.id, input: requestInputForDigest(input) });
+    const requestHash = digest({ workspaceId: auth.workspaceId, actorUserId: auth.userId, moduleId, actionId: action.id, input: requestInputForDigest(input) });
     const prior = await replay(store, auth, action, key, requestHash);
     if (prior) return prior;
     if (action.operation === "ai") return saveReceipt(store, auth, action, key, requestHash, await queueAi(store, auth, action, input, deps));
     const dryRun = action.approvalRequired && input.dryRun === true;
     const approved = action.approvalRequired && !dryRun ? approval(input, auth, deps.now()) : undefined;
+    if (approved) await assertApprovalDecisionUnused(store, auth, approved);
     const execution = await executeCommand(store, auth, action, input, deps, !dryRun, approved);
     execution.audit = { ...execution.audit, dryRun, effectBoundary: action.effectBoundary, messageSent: false, providerCallStarted: false, autonomousSignatureOrConsent: false, legalComplianceCertified: false, ...(approved ? { approvalDecisionId: approved.decisionId, approvedBy: approved.approvedBy, approvalReason: approved.reason, approvedAt: approved.approvedAt } : {}) };
     return saveReceipt(store, auth, action, key, requestHash, execution);

@@ -2,10 +2,17 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import catalog from "../catalog/apps.json";
 import { runtimeReservation } from "../src/server/app-manifests";
+import { loadDatabaseMigrations } from "../src/server/database-migrations";
 
 const migration = readFileSync("db/migrations/015-runtime-resource-reservations.sql", "utf8");
 
 describe("runtime reservation normalization", () => {
+  it("registers the immutable reservation migration before subsequent releases", async () => {
+    const migrations = await loadDatabaseMigrations();
+    expect(migrations.find((item) => item.version === "015")).toMatchObject({ name: "runtime-resource-reservations" });
+    expect(migrations.findIndex((item) => item.version === "015")).toBeLessThan(migrations.findIndex((item) => item.version === "016"));
+  });
+
   it("keeps catalogue planning memory equal to the complete bounded manifest", () => {
     for (const app of catalog) expect(app.memoryBudgetMb, app.id).toBe(runtimeReservation(app.id).memoryMb);
   });

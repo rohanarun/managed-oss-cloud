@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 const compose = readFileSync("deploy/google-cloud/docker-compose.yml", "utf8");
 const terraform = readFileSync("infra/google-cloud/main.tf", "utf8");
 const roleConfigurator = readFileSync("deploy/google-cloud/database/configure-role-logins.sh", "utf8");
+const domainIdentityPreflight = readFileSync("deploy/google-cloud/database/preflight-migration-018-domain-identities.sql", "utf8");
 const rollout = readFileSync("deploy/google-cloud/rollout-control-plane.sh", "utf8");
+const ciWorkflow = readFileSync(".github/workflows/ci.yml", "utf8");
+const containerWorkflow = readFileSync(".github/workflows/container.yml", "utf8");
 
 function service(name: string, next: string) {
   return compose.slice(compose.indexOf(`  ${name}:`), compose.indexOf(`  ${next}:`));
@@ -56,5 +59,52 @@ describe("production database role separation", () => {
     const rolloutConfigure = rollout.indexOf('"$database_configurator"', rolloutMigration);
     expect(rolloutMigration).toBeLessThan(rolloutConfigure);
     expect(rolloutConfigure).toBeLessThan(rollout.indexOf("compose up -d", rolloutConfigure));
+  });
+
+  it("installs the trusted hashing dependency with the database owner before scoped migrations", () => {
+    for (const source of [rollout, terraform]) {
+      const extension = source.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+      const migration = source.indexOf("run --rm migrate");
+      expect(extension).toBeGreaterThan(0);
+      expect(extension).toBeLessThan(migration);
+      expect(source.slice(extension, migration)).not.toContain("managed_oss_migrator_login");
+    }
+    const databaseStart = terraform.indexOf("docker-compose up -d database");
+    const extension = terraform.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    expect(databaseStart).toBeGreaterThan(0);
+    expect(databaseStart).toBeLessThan(extension);
+    expect(terraform.slice(databaseStart, extension)).toContain("pg_isready");
+  });
+
+  it("runs the privacy-safe migration 018 duplicate inventory with the database owner immediately before migrations", () => {
+    const extension = rollout.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    const preflight = rollout.indexOf('domain_identity_report="$(', extension);
+    const migration = rollout.indexOf("run --rm migrate", preflight);
+    expect(preflight).toBeGreaterThan(extension);
+    expect(migration).toBeGreaterThan(preflight);
+    const gate = rollout.slice(preflight, migration);
+    expect(gate).toContain('cat -- "$domain_identity_preflight"');
+    expect(gate).toContain("IFS= read -r PGPASSWORD");
+    expect(gate).toContain('psql -X -q -v ON_ERROR_STOP=1 -A -t -F "|"');
+    expect(gate).toContain("rows != 24 || unique_names != 24");
+    expect(gate).toContain('postgres_password=""');
+    expect(gate).not.toContain("-e PGPASSWORD");
+    expect(domainIdentityPreflight).toContain("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;");
+    expect(domainIdentityPreflight).toContain("ROLLBACK;");
+  });
+
+  it("installs the trusted hashing dependency before every PostgreSQL-backed CI suite", () => {
+    expect(ciWorkflow.match(/CREATE EXTENSION IF NOT EXISTS pgcrypto/g)).toHaveLength(2);
+    expect(containerWorkflow.match(/CREATE EXTENSION IF NOT EXISTS pgcrypto/g)).toHaveLength(1);
+    expect(ciWorkflow.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto")).toBeLessThan(
+      ciWorkflow.indexOf("npm test"),
+    );
+    expect(containerWorkflow.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto")).toBeLessThan(
+      containerWorkflow.indexOf("npm test"),
+    );
+    const acceptanceJob = ciWorkflow.slice(ciWorkflow.indexOf("shared-database-acceptance:"));
+    expect(acceptanceJob.indexOf("CREATE EXTENSION IF NOT EXISTS pgcrypto")).toBeLessThan(
+      acceptanceJob.indexOf("npm run test:postgres-acceptance"),
+    );
   });
 });

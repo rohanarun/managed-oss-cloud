@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { esignIntegrationManifest, executeEsignAction, recordEsignAiCompletion, validateEsignAiCompletion, type EsignAuthorization, type EsignExecutionResult } from "../src/server/esign-engine.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { esignBoundedScanLimit, esignIntegrationManifest, executeEsignAction, recordEsignAiCompletion, validateEsignAiCompletion, type EsignAuthorization, type EsignExecutionResult } from "../src/server/esign-engine.js";
 import { MemorySuiteStore } from "../src/server/suite-store.js";
 import { esignActions } from "../src/shared/esign-actions.js";
 import { suiteModuleById, type SuiteModuleDefinition } from "../src/shared/suite.js";
@@ -108,13 +108,23 @@ describe("clean-room AI-native e-signature workflow", () => {
 
   it("serializes retries into one durable result and rejects idempotency-key equivocation", async () => {
     const context = await fixture();
+    const receiptLookups = vi.spyOn(context.store, "findCommandReceipt");
+    const recordLists = vi.spyOn(context.store, "listRecords");
     const input = { name: "Atomic agreement", purpose: "One exact result", idempotencyKey: key("atomic-template") };
     const [created, replayed] = await Promise.all([context.run("template-create", input), context.run("template-create", input)]);
     expect(first(created).id).toBe(first(replayed).id);
     expect([created.audit.replayed, replayed.audit.replayed].sort()).toEqual([false, true]);
+    expect(receiptLookups).toHaveBeenCalledWith(context.userId, { recordType: "esign-command-receipt", moduleId: "esign", actionId: "template-create", idempotencyKey: input.idempotencyKey });
+    expect(recordLists.mock.calls.filter(([, query]) => query.recordType === "esign-command-receipt")).toHaveLength(0);
     expect(await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "template", limit: 20 })).toHaveLength(1);
     expect(await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "esign-command-receipt", limit: 20 })).toHaveLength(1);
     await expect(context.run("template-create", { ...input, purpose: "Changed input" })).rejects.toThrow(/idempotency key/);
+    const adminId = randomUUID();
+    await context.store.addWorkspaceMember(context.userId, adminId, "admin");
+    const adminAuth: EsignAuthorization = { userId: adminId, workspaceId: context.workspace.id, role: "admin", scopes: ["*"] };
+    await expect(executeEsignAction(context.store, adminAuth, "esign", "template-create", input, deps)).rejects.toThrow(/idempotency key belongs to another actor/);
+    expect(await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "template", limit: 20 })).toHaveLength(1);
+    expect(await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "esign-command-receipt", limit: 20 })).toHaveLength(1);
   });
 
   it("completes the hash-bound workflow without persisting plaintext tokens or field values", async () => {
@@ -137,13 +147,30 @@ describe("clean-room AI-native e-signature workflow", () => {
     expect(replay.audit.privateOutputUnavailableOnReplay).toBe(true);
 
     const fact = { fieldId: String(draft.fields[0].fieldId), valueHash: "d".repeat(64), completedAt: clock.toISOString(), method: "drawn-mark" };
+    const tokenLookup = vi.spyOn(context.store, "findSignerSessionByTokenHash");
+    const tokenValidationLists = vi.spyOn(context.store, "listRecords");
     await expect(context.run("field-completion-record", { envelopeId: draft.envelope.id, signerId, sessionToken: `esig_${"Z".repeat(43)}`, expectedEnvelopeVersion: 3, expectedSessionVersion: 1, fieldFacts: [fact], dryRun: true, idempotencyKey: key("wrong-token") })).rejects.toThrow(/token is invalid/);
     const completionDry = await context.run("field-completion-record", { envelopeId: draft.envelope.id, signerId, sessionToken: token, expectedEnvelopeVersion: 3, expectedSessionVersion: 1, fieldFacts: [fact], dryRun: true, idempotencyKey: key("completion-dry") });
     expect(completionDry.audit).toMatchObject({ plannedEnvelopeState: "completed", rawFieldValuesPersisted: false, signatureComplianceClaimed: false });
+    expect(tokenLookup).toHaveBeenCalledWith(context.userId, session.data.tokenHash);
+    expect(tokenValidationLists.mock.calls.filter(([, query]) => query.recordType === "signer-session")).toHaveLength(0);
+    tokenLookup.mockRestore();
+    tokenValidationLists.mockRestore();
     const completion = await context.run("field-completion-record", { envelopeId: draft.envelope.id, signerId, sessionToken: token, expectedEnvelopeVersion: 3, expectedSessionVersion: 1, fieldFacts: [fact], dryRun: false, approval: approval(context.auth, "completion"), idempotencyKey: key("completion") });
     expect(first(completion, "envelope")).toMatchObject({ state: "completed", data: { version: 4 } });
     expect(first(completion, "field-completion").data).toMatchObject({ valueHash: "d".repeat(64), rawValuePersisted: false, identityAssurance: "not-assessed", immutable: true });
     expect(JSON.stringify(await context.store.listRecords(context.userId, { moduleId: "esign", limit: 1_000 }))).not.toContain(token);
+
+    const originalListRecords = context.store.listRecords.bind(context.store);
+    const certificateLists = vi.spyOn(context.store, "listRecords").mockImplementation(async (userId, input) => {
+      if (input.moduleId === "esign" && input.recordType === undefined && input.limit === esignBoundedScanLimit + 1) {
+        return Array.from({ length: esignBoundedScanLimit + 1 }, () => session);
+      }
+      return originalListRecords(userId, input);
+    });
+    await expect(context.run("certificate-export", { envelopeId: draft.envelope.id, expectedVersion: 4, format: "canonical-json", dryRun: true, idempotencyKey: key("certificate-saturated") })).rejects.toThrow(/bounded esign\/all-records scan is saturated/);
+    expect(certificateLists).toHaveBeenCalledWith(context.userId, { moduleId: "esign", recordType: undefined, limit: esignBoundedScanLimit + 1 });
+    certificateLists.mockRestore();
 
     const certificateDry = await context.run("certificate-export", { envelopeId: draft.envelope.id, expectedVersion: 4, format: "canonical-json", dryRun: true, idempotencyKey: key("certificate-dry") });
     expect(certificateDry.audit).toMatchObject({ legalComplianceCertified: false, qualifiedSignatureClaimed: false, privateExport: true, contentHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -205,7 +232,18 @@ describe("clean-room AI-native e-signature workflow", () => {
     const signerId = String(draft.signers[0].signerId);
     const original = await context.run("signer-session-issue", { envelopeId: draft.envelope.id, signerId, expectedEnvelopeVersion: 2, expiresAt: "2026-08-24T19:00:00.000Z", dryRun: false, approval: approval(context.auth, "original-session"), idempotencyKey: key("original-session") });
     const originalSession = first(original, "signer-session");
-    const replacement = await executeEsignAction(context.store, context.auth, "esign", "signer-session-issue", { envelopeId: draft.envelope.id, signerId, expectedEnvelopeVersion: 3, expiresAt: "2026-08-25T20:00:00.000Z", dryRun: false, approval: approval(context.auth, "replacement-session"), idempotencyKey: key("replacement-session") }, { ...deps, now: () => new Date("2026-08-24T20:00:00.000Z") });
+    const originalListRecords = context.store.listRecords.bind(context.store);
+    const sessionLists = vi.spyOn(context.store, "listRecords").mockImplementation(async (userId, input) => {
+      if (input.moduleId === "esign" && input.recordType === "signer-session" && input.limit === esignBoundedScanLimit + 1) {
+        return Array.from({ length: esignBoundedScanLimit + 1 }, () => originalSession);
+      }
+      return originalListRecords(userId, input);
+    });
+    const replacementInput = { envelopeId: draft.envelope.id, signerId, expectedEnvelopeVersion: 3, expiresAt: "2026-08-25T20:00:00.000Z", dryRun: false, approval: approval(context.auth, "replacement-session"), idempotencyKey: key("replacement-session") };
+    await expect(executeEsignAction(context.store, context.auth, "esign", "signer-session-issue", replacementInput, { ...deps, now: () => new Date("2026-08-24T20:00:00.000Z") })).rejects.toThrow(/bounded esign\/signer-session scan is saturated/);
+    expect(sessionLists).toHaveBeenCalledWith(context.userId, { moduleId: "esign", recordType: "signer-session", limit: esignBoundedScanLimit + 1 });
+    sessionLists.mockRestore();
+    const replacement = await executeEsignAction(context.store, context.auth, "esign", "signer-session-issue", replacementInput, { ...deps, now: () => new Date("2026-08-24T20:00:00.000Z") });
     expect((await context.store.getRecord(context.userId, originalSession.id))?.state).toBe("expired");
     expect(replacement.audit.expiredSessionIdsClosed).toEqual([originalSession.id]);
     expect(replacement.records.find((record) => record.recordType === "signer-session" && record.state === "active")?.id).not.toBe(originalSession.id);
@@ -221,6 +259,42 @@ describe("clean-room AI-native e-signature workflow", () => {
     await expect(context.run("envelope-dispatch-plan", { envelopeId: draft.envelope.id, expectedVersion: 1, previewHash: "f".repeat(64), channel: "hosted-link", dryRun: false, approval: approval(context.auth, "stale"), idempotencyKey: key("stale-hash") })).rejects.toThrow(/preview hash/);
     await expect(context.run("envelope-dispatch-plan", { envelopeId: draft.envelope.id, expectedVersion: 1, previewHash: preview.audit.previewHash, channel: "hosted-link", dryRun: false, idempotencyKey: key("missing-approval") })).rejects.toThrow(/human approval/);
     await expect(context.run("envelope-preview", { envelopeId: draft.envelope.id, expectedVersion: 2 })).rejects.toThrow(/version is stale/);
+  });
+
+  it("requires fresh single-use approval decisions and binds them at the receipt boundary", async () => {
+    const context = await fixture();
+    const draft = await draftEnvelope(context, { suffix: "approval-guard" });
+    const preview = await context.run("envelope-preview", { envelopeId: draft.envelope.id, expectedVersion: 1 });
+    const decisionLookups = vi.spyOn(context.store, "findApprovalDecisionReceipt");
+    const recordLists = vi.spyOn(context.store, "listRecords");
+    const stale = { ...approval(context.auth, "stale-clock"), approvedAt: new Date(clock.getTime() - 24 * 60 * 60 * 1_000 - 1).toISOString() };
+    await expect(context.run("envelope-dispatch-plan", { envelopeId: draft.envelope.id, expectedVersion: 1, previewHash: preview.audit.previewHash, channel: "hosted-link", dryRun: false, approval: stale, idempotencyKey: key("stale-clock") })).rejects.toThrow(/stale|24 hours/);
+
+    const sharedDecision = approval(context.auth, "single-use");
+    await context.run("envelope-dispatch-plan", { envelopeId: draft.envelope.id, expectedVersion: 1, previewHash: preview.audit.previewHash, channel: "hosted-link", dryRun: false, approval: sharedDecision, idempotencyKey: key("single-use-dispatch") });
+    const receipt = (await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "esign-command-receipt", limit: 100 })).find((record) => record.data.idempotencyKey === key("single-use-dispatch"));
+    expect(receipt?.data).toMatchObject({ actionId: "envelope-dispatch-plan", actorUserId: context.userId, approvalDecisionId: sharedDecision.decisionId, approvedBy: context.userId, approvedAt: clock.toISOString() });
+    await expect(context.run("signer-session-issue", { envelopeId: draft.envelope.id, signerId: draft.signers[0].signerId, expectedEnvelopeVersion: 2, expiresAt: "2026-08-25T18:00:00.000Z", dryRun: false, approval: sharedDecision, idempotencyKey: key("single-use-session") })).rejects.toThrow(/approval decision was already used/);
+    expect(await context.store.listRecords(context.userId, { moduleId: "esign", recordType: "signer-session", limit: 20 })).toHaveLength(0);
+    expect(decisionLookups).toHaveBeenCalledWith(context.userId, sharedDecision.decisionId);
+    expect(recordLists.mock.calls.filter(([, query]) => query.recordType === "esign-command-receipt")).toHaveLength(1);
+  });
+
+  it("rejects another requester's private AI audit as evidence through the full trusted transaction path", async () => {
+    const context = await fixture();
+    const draft = await draftEnvelope(context, { suffix: "private-evidence" });
+    const ownerQueued = await context.run("clause-propose", { templateVersionId: draft.templateVersion.id, instruction: "Prepare the owner's private cited review.", evidenceIds: [draft.templateVersion.id], idempotencyKey: key("private-owner-ai") });
+    const privateAudit = first(ownerQueued, "esign-ai-request-audit");
+    const memberId = randomUUID();
+    await context.store.addWorkspaceMember(context.userId, memberId, "member");
+    const memberAuth: EsignAuthorization = { userId: memberId, workspaceId: context.workspace.id, role: "member", scopes: ["*"] };
+    expect(await context.store.getRecord(memberId, privateAudit.id)).toBeUndefined();
+    await expect(executeEsignAction(context.store, memberAuth, "esign", "clause-propose", {
+      templateVersionId: draft.templateVersion.id,
+      instruction: "Attempt to use another requester's private audit.",
+      evidenceIds: [privateAudit.id],
+      idempotencyKey: key("private-member-ai"),
+    }, deps)).rejects.toThrow(/AI evidence record was not found/);
   });
 
   it("queues cited AI proposals under the immutable platform policy and never mutates workflow state", async () => {

@@ -234,7 +234,7 @@ if grep -F 'resource "google_secret_manager_secret_iam_member" "worker_bootstrap
   fail "private workers still receive the shared control-plane administration secret"
 fi
 verify_lines="$(grep -nF 'verify-control-plane-image.sh --image' "$main_tf" | cut -d: -f1)"
-pull_lines="$(grep -nF 'docker-compose pull' "$main_tf" | cut -d: -f1)"
+pull_lines="$(grep -nE 'docker-compose( --profile operations)? pull[[:space:]]*$' "$main_tf" | cut -d: -f1)"
 [[ "$(wc -w <<<"$verify_lines" | tr -d ' ')" == "2" && "$(wc -w <<<"$pull_lines" | tr -d ' ')" == "2" ]] || fail "both control-plane and worker startup must have one provenance gate and one image pull"
 for position in 1 2; do
   verify_line="$(sed -n "${position}p" <<<"$verify_lines")"

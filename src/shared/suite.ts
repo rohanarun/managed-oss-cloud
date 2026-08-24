@@ -1,3 +1,12 @@
+import {
+  additiveBusinessActionsByModule,
+  additiveBusinessModules,
+} from "./additive-business-actions.js";
+import {
+  additiveWaveTwoActionsByModule,
+  additiveWaveTwoModules,
+} from "./extended-business-actions.js";
+
 export type SuitePaidPlanId = "starter" | "scale" | "fleet";
 export type SuitePlanId = "none" | SuitePaidPlanId;
 export type SuiteResourceClass = "shared" | "high" | "accelerated";
@@ -33,6 +42,13 @@ export interface SuiteModuleDefinition {
   description: string;
   minPlan: SuitePaidPlanId;
   resourceClass: SuiteResourceClass;
+  resourceRequirements?: {
+    class: SuiteResourceClass;
+    minimumCpuMillicores: number;
+    minimumMemoryMiB: number;
+    includedStorageGb: number;
+    recommendedWorkerConcurrency: number;
+  };
   recordTypes: string[];
   aiCapabilities: string[];
   scaleGuidance?: string;
@@ -95,7 +111,65 @@ const aiReadScopes: Record<string, string[]> = {
   email: ["email", "knowledge", "crm", "feedback"],
 };
 
-export function suiteAiReadScopes(moduleId: string) { return aiReadScopes[moduleId] ?? [moduleId]; }
+const explicitCrossToolEvidenceModules = new Set([
+  "projects", "drive", "channels", "operations",
+  "tables", "meetings", "insights", "learning", "community",
+  "events", "people", "metering", "assurance", "live",
+]);
+
+export function suiteAiReadScopes(moduleId: string, options: { explicitSelection?: boolean } = {}) {
+  if (options.explicitSelection && explicitCrossToolEvidenceModules.has(moduleId)) return suiteModules.map((module) => module.id);
+  return aiReadScopes[moduleId] ?? [moduleId];
+}
+
+const additiveCategoryReferences: Record<string, string> = {
+  tables: "Public relational-data and spreadsheet patterns",
+  meetings: "Public meeting transcript and action-ledger patterns",
+  insights: "Public business-intelligence and measurement patterns",
+  learning: "Public learning-management and credential patterns",
+  community: "Public forum and community-management patterns",
+};
+
+const extendedCategoryReferences: Record<string, string> = {
+  events: "Public event, ticketing, and access-control patterns",
+  people: "Public HRIS and employment-record patterns",
+  metering: "Public usage-metering and billing-ledger patterns",
+  assurance: "Public risk, control, and audit-evidence patterns",
+  live: "Public livestream, chat, and media-consent patterns",
+};
+
+const additiveSuiteModules: SuiteModuleDefinition[] = additiveBusinessModules.map((module) => ({
+  id: module.id,
+  name: module.name,
+  inspiredBy: additiveCategoryReferences[module.id],
+  category: module.category,
+  description: module.originalProductThesis,
+  minPlan: module.minPlan,
+  resourceClass: module.resource.class,
+  resourceRequirements: { ...module.resource },
+  recordTypes: [...new Set([
+    ...(additiveBusinessActionsByModule.get(module.id) ?? []).map((action) => action.recordType),
+    "additive-command-receipt",
+  ])],
+  aiCapabilities: [...module.aiNativeQualities],
+}));
+
+const extendedSuiteModules: SuiteModuleDefinition[] = additiveWaveTwoModules.map((module) => ({
+  id: module.id,
+  name: module.name,
+  inspiredBy: extendedCategoryReferences[module.id],
+  category: module.category,
+  description: module.originalProductThesis,
+  minPlan: module.minPlan,
+  resourceClass: module.resource.class,
+  resourceRequirements: { ...module.resource },
+  recordTypes: [...new Set([
+    ...(additiveWaveTwoActionsByModule.get(module.id) ?? []).map((action) => action.recordType),
+    ...(module.id === "metering" ? ["credit-application-receipt"] : []),
+    "extended-business-command-receipt",
+  ])],
+  aiCapabilities: [...module.aiNativeQualities],
+}));
 
 export const suiteModules: SuiteModuleDefinition[] = [
   {
@@ -362,60 +436,62 @@ export const suiteModules: SuiteModuleDefinition[] = [
     scaleGuidance: "Use Scale for large audiences, high provider-receipt volume, frequent campaigns, long retention, or large private exports.",
     externalUsage: ["customer email provider", "customer verification gateway", "customer-selected model endpoint"],
   },
+  ...additiveSuiteModules,
+  ...extendedSuiteModules,
   {
     id: "projects",
     name: "Projects",
     inspiredBy: "Plane",
     category: "Product delivery",
-    description: "Issues, cycles, modules, product documents, and AI-maintained delivery briefs.",
+    description: "Outcome projects, scoped issues, acyclic dependencies, capacity-safe cycle snapshots, and cited planning proposals.",
     minPlan: "scale",
     resourceClass: "high",
-    recordTypes: ["issue", "cycle", "module", "project-document"],
-    aiCapabilities: ["write issue", "plan cycle", "surface delivery risk"],
+    recordTypes: ["project", "issue", "cycle", "premium-ai-request-audit", "premium-command-receipt"],
+    aiCapabilities: ["propose cited plan", "explain project health with citations"],
   },
   {
     id: "drive",
     name: "Drive",
     inspiredBy: "Nextcloud",
     category: "Files",
-    description: "Private team files, shares, versions, search, and document understanding.",
+    description: "Private vaults, checksum-addressed file versions, approved expiring shares, retention controls, and cited document understanding.",
     minPlan: "scale",
     resourceClass: "high",
-    recordTypes: ["file", "folder", "share", "version"],
-    aiCapabilities: ["classify file", "extract document facts", "find related files"],
+    recordTypes: ["vault", "file", "file-version", "share", "premium-ai-request-audit", "premium-command-receipt"],
+    aiCapabilities: ["understand checksum-pinned document with citations"],
   },
   {
     id: "channels",
     name: "Channels",
     inspiredBy: "Zulip",
     category: "Team communication",
-    description: "Topic-first team communication with summaries, decisions, and asynchronous agent participation.",
+    description: "Topic-first streams with preview-approved messages, redaction receipts, human decisions, cited summaries, and non-sending digests.",
     minPlan: "scale",
     resourceClass: "high",
-    recordTypes: ["channel", "topic", "message", "decision"],
-    aiCapabilities: ["summarize topic", "extract decision", "draft response"],
+    recordTypes: ["stream", "topic", "message", "premium-ai-request-audit", "premium-command-receipt"],
+    aiCapabilities: ["summarize topic with citations", "draft non-sending digest"],
   },
   {
     id: "operations",
     name: "Operations",
     inspiredBy: "ERPNext",
     category: "Business operations",
-    description: "Orders, inventory, invoices, vendors, and explainable operational forecasts.",
+    description: "Parties, priced items, immutable order and invoice snapshots, balanced journals, payment receipts, and cited variance explanations.",
     minPlan: "fleet",
     resourceClass: "accelerated",
-    recordTypes: ["order", "invoice", "item", "vendor"],
-    aiCapabilities: ["forecast demand", "reconcile exception", "explain margin"],
+    recordTypes: ["party", "item", "order", "invoice", "journal", "payment", "premium-ai-request-audit", "premium-command-receipt"],
+    aiCapabilities: ["explain operational variance without posting accounting facts"],
   },
   {
     id: "assistant",
     name: "Assistant",
     inspiredBy: "LibreChat",
     category: "AI workspace",
-    description: "A model-neutral private assistant with tools, retrieval, approvals, and workspace memory.",
+    description: "A model-neutral workbench for attached evidence, immutable prompts, reviewed cited results, and allowlisted proposal-only agents.",
     minPlan: "fleet",
     resourceClass: "accelerated",
-    recordTypes: ["assistant", "conversation", "message", "tool-run"],
-    aiCapabilities: ["answer across workspace", "invoke approved tool", "build reusable agent"],
+    recordTypes: ["collection", "source-attachment", "prompt-version", "premium-ai-request-audit", "ai-result", "agent", "premium-command-receipt"],
+    aiCapabilities: ["run attached evidence-bound prompt", "review cited model result", "propose allowlisted agent actions"],
   },
 ];
 

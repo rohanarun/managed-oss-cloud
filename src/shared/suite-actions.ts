@@ -1,8 +1,10 @@
+import { additiveBusinessActions } from "./additive-business-actions.js";
 import { coreBusinessActions } from "./core-business-actions.js";
 import { esignActions } from "./esign-actions.js";
 import { emailActions } from "./email-actions.js";
 import { firstPartyGrowthActions } from "./first-party-growth-actions.js";
 import { premiumBusinessActions } from "./premium-business-actions.js";
+import { additiveWaveTwoActions } from "./extended-business-actions.js";
 
 export type SuiteActionOperation = "create" | "update" | "ai" | "command" | "read";
 export type SuiteActionRequiredScope = "read" | "write" | "ai";
@@ -34,7 +36,7 @@ export interface SuiteActionDefinition {
   goalField?: string;
   resultingState?: string;
   requiredFields: string[];
-  engine?: "legacy" | "core" | "premium" | "growth" | "esign" | "email";
+  engine?: "legacy" | "core" | "premium" | "growth" | "esign" | "email" | "additive" | "extended";
   inputSchema?: SuiteActionInputJsonSchema;
   exampleInput?: Record<string, unknown>;
   requiredScope?: SuiteActionRequiredScope;
@@ -44,6 +46,10 @@ export interface SuiteActionDefinition {
   destructive?: boolean;
   externalEffect?: boolean | string;
   idempotent?: boolean;
+  requiresApproval?: boolean;
+  supportsDryRun?: boolean;
+  minimumRole?: string;
+  effectBoundary?: string;
 }
 
 export const suiteActions: SuiteActionDefinition[] = [
@@ -284,6 +290,67 @@ for (const action of emailActions) {
     destructive: action.destructive,
     externalEffect: action.effectBoundary,
     idempotent: action.idempotent,
+  });
+}
+
+for (const action of additiveBusinessActions) {
+  suiteActions.push({
+    id: action.id,
+    moduleId: action.moduleId,
+    title: action.title,
+    description: action.description,
+    operation: action.operation === "mutation" ? "command" : action.operation,
+    recordType: action.recordType,
+    requiredFields: [...action.inputSchema.required],
+    engine: "additive",
+    inputSchema: {
+      type: "object",
+      required: [...action.inputSchema.required],
+      properties: Object.fromEntries(Object.entries(action.inputSchema.properties).map(([key, value]) => [key, { ...value }])),
+      additionalProperties: false,
+    },
+    exampleInput: { ...action.exampleInput },
+    requiredScope: action.requiredScope,
+    mcpToolName: action.mcpToolName,
+    cliExample: action.cliExample,
+    risk: action.risk,
+    destructive: action.destructive,
+    externalEffect: action.externalEffect,
+    idempotent: action.idempotent,
+    requiresApproval: action.requiresApproval,
+    supportsDryRun: action.supportsDryRun,
+    minimumRole: action.minimumRole,
+  });
+}
+
+for (const action of additiveWaveTwoActions) {
+  suiteActions.push({
+    id: action.id,
+    moduleId: action.moduleId,
+    title: action.title,
+    description: action.description,
+    operation: action.operation === "mutation" ? "command" : action.operation,
+    recordType: action.recordType,
+    requiredFields: [...action.inputSchema.required],
+    engine: "extended",
+    inputSchema: {
+      type: "object",
+      required: [...action.inputSchema.required],
+      properties: Object.fromEntries(Object.entries(action.inputSchema.properties).map(([key, value]) => [key, { ...value }])),
+      additionalProperties: false,
+    },
+    exampleInput: { ...action.exampleInput },
+    requiredScope: action.requiredScope,
+    mcpToolName: action.mcpToolName,
+    cliExample: action.cliExample,
+    risk: action.risk,
+    destructive: action.destructive,
+    externalEffect: action.externalEffect,
+    idempotent: action.idempotent,
+    requiresApproval: action.requiresApproval,
+    supportsDryRun: action.supportsDryRun,
+    minimumRole: action.minimumRole,
+    effectBoundary: action.effectBoundary,
   });
 }
 

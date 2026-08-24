@@ -12,6 +12,8 @@ import { executePremiumBusinessAction } from "./premium-business-store-engine.js
 import { executeFirstPartyGrowthAction } from "./first-party-growth-engine.js";
 import { executeEsignAction } from "./esign-engine.js";
 import { executeEmailAction } from "./email-engine.js";
+import { executeAdditiveBusinessActionWithStore } from "./additive-business-engine.js";
+import { executeExtendedBusinessAction, type ExtendedBusinessEngineDependencies } from "./extended-business-engine.js";
 
 export type SuiteActionResult = { kind: "record"; action: SuiteActionDefinition; record: SuiteRecord } | { kind: "ai-action"; action: SuiteActionDefinition; aiAction: SuiteAiAction; records?: SuiteRecord[]; audit?: Record<string, unknown> } | { kind: "command" | "read"; action: SuiteActionDefinition; records: SuiteRecord[]; audit: Record<string, unknown> };
 
@@ -20,6 +22,7 @@ export interface SuiteEngineDependencies {
   resolveTxt: (hostname: string) => Promise<string[][]>;
   resolveHost: (hostname: string) => Promise<string[]>;
   publicBaseUrl?: string;
+  verifyExtendedExternalEvidence?: ExtendedBusinessEngineDependencies["verifyExternalEvidence"];
 }
 
 const defaultDependencies: SuiteEngineDependencies = {
@@ -939,7 +942,8 @@ function validateInput(action: SuiteActionDefinition, input: Record<string, unkn
   for (const field of ["code", "slug"]) if (field in input && (typeof input[field] !== "string" || !/^[a-z0-9][a-z0-9-]{1,79}$/.test(input[field]))) throw new Error(`${field} must contain lowercase letters, numbers, and hyphens.`);
 }
 
-export async function executeSuiteAction(store: SuiteStore, userId: string, moduleId: string, actionId: string, input: Record<string, unknown>, dependencies: SuiteEngineDependencies = defaultDependencies): Promise<SuiteActionResult> {
+export async function executeSuiteAction(store: SuiteStore, userId: string, moduleId: string, actionId: string, input: Record<string, unknown>, dependencyOverrides: Partial<SuiteEngineDependencies> = {}): Promise<SuiteActionResult> {
+  const dependencies: SuiteEngineDependencies = { ...defaultDependencies, ...dependencyOverrides };
   const action = suiteAction(moduleId, actionId);
   if (!action) throw new Error("Module action not found.");
   const workspace = await store.getOrCreateWorkspace(userId);
@@ -964,6 +968,10 @@ export async function executeSuiteAction(store: SuiteStore, userId: string, modu
       moduleId as Parameters<typeof executePremiumBusinessAction>[2],
       actionId as never,
       input,
+      {
+        now: dependencies.now,
+        modelPolicyId: config.AI_MODEL,
+      },
     );
     return { ...result, action } as SuiteActionResult;
   }
@@ -1027,6 +1035,43 @@ export async function executeSuiteAction(store: SuiteStore, userId: string, modu
       },
     );
     return { ...result, action } as SuiteActionResult;
+  }
+  if (action.engine === "additive") {
+    if (!workspace.currentRole) throw new Error("The workspace membership role is unavailable.");
+    const result = await executeAdditiveBusinessActionWithStore(
+      store,
+      { userId, workspaceId: workspace.id, role: workspace.currentRole, scopes: ["*"] },
+      moduleId as Parameters<typeof executeAdditiveBusinessActionWithStore>[2],
+      actionId,
+      input,
+      { now: dependencies.now, modelPolicyId: config.AI_MODEL },
+    );
+    const records = (await Promise.all(result.records.map((record) => store.getRecord(userId, record.id))))
+      .filter((record): record is SuiteRecord => Boolean(record));
+    if (records.length !== result.records.length) throw new Error("The additive business result references a missing workspace record.");
+    const queuedActionId = typeof result.preview?.queuedActionId === "string" ? result.preview.queuedActionId : undefined;
+    if (result.kind === "ai-proposal" && queuedActionId) {
+      const aiAction = await store.getAiAction(userId, queuedActionId);
+      if (!aiAction) throw new Error("The queued additive business proposal is unavailable.");
+      return { kind: "ai-action", action, aiAction, records, audit: { ...result.audit, ...(result.preview ? { preview: result.preview } : {}), proposalOnly: true } };
+    }
+    return { kind: result.kind === "read" ? "read" : "command", action, records, audit: { ...result.audit, ...(result.preview ? { preview: result.preview } : {}) } };
+  }
+  if (action.engine === "extended") {
+    if (!workspace.currentRole) throw new Error("The workspace membership role is unavailable.");
+    const result = await executeExtendedBusinessAction(
+      store,
+      { userId, workspaceId: workspace.id, role: workspace.currentRole, scopes: ["*"] },
+      moduleId,
+      actionId,
+      input,
+      { now: dependencies.now, modelPolicyId: config.AI_MODEL, ...(dependencies.verifyExtendedExternalEvidence ? { verifyExternalEvidence: dependencies.verifyExtendedExternalEvidence } : {}) },
+    );
+    if (result.kind === "ai-action") {
+      if (!result.aiAction) throw new Error("The queued extended business proposal is unavailable.");
+      return { kind: "ai-action", action, aiAction: result.aiAction, records: result.records, audit: result.audit };
+    }
+    return { kind: result.kind === "read" ? "read" : "command", action, records: result.records, audit: result.audit };
   }
   validateInput(action, input);
 

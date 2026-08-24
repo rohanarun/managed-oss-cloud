@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { emailActions } from "../src/shared/email-actions.js";
 import { suiteModuleById, type SuiteModuleDefinition } from "../src/shared/suite.js";
-import { emailIntegrationManifest, executeEmailAction, normalizeEmailAddress, recordEmailAiCompletion, validateEmailAiCompletion, type EmailAuthorization, type EmailExecutionResult } from "../src/server/email-engine.js";
+import { emailBoundedScanLimit, emailIntegrationManifest, executeEmailAction, normalizeEmailAddress, recordEmailAiCompletion, validateEmailAiCompletion, type EmailAuthorization, type EmailExecutionResult } from "../src/server/email-engine.js";
 import { emailPromptDigest, emailPromptPolicy } from "../src/server/prompts/email.js";
 import { MemorySuiteStore } from "../src/server/suite-store.js";
 
@@ -140,12 +140,22 @@ describe("clean-room AI-native Letterline email workflow", () => {
 
   it("serializes command retries and rejects idempotency-key equivocation", async () => {
     const context = await fixture();
+    const receiptLookups = vi.spyOn(context.store, "findCommandReceipt");
+    const recordLists = vi.spyOn(context.store, "listRecords");
     const input = { name: "Atomic audience", purpose: "One exact purpose", consentPolicyVersion: "v1", idempotencyKey: key("atomic") };
     const [created, replayed] = await Promise.all([context.run("audience-create", input), context.run("audience-create", input)]);
     expect(first(created).id).toBe(first(replayed).id);
     expect([created.audit.replayed, replayed.audit.replayed].sort()).toEqual([false, true]);
+    expect(receiptLookups).toHaveBeenCalledWith(context.userId, { recordType: "email-command-receipt", moduleId: "email", actionId: "audience-create", idempotencyKey: input.idempotencyKey });
+    expect(recordLists.mock.calls.filter(([, query]) => query.recordType === "email-command-receipt")).toHaveLength(0);
     expect(await context.store.listRecords(context.userId, { moduleId: "email", recordType: "audience", limit: 20 })).toHaveLength(1);
     await expect(context.run("audience-create", { ...input, purpose: "Changed purpose" })).rejects.toThrow(/idempotency key/);
+    const adminId = randomUUID();
+    await context.store.addWorkspaceMember(context.userId, adminId, "admin");
+    const adminAuth: EmailAuthorization = { userId: adminId, workspaceId: context.workspace.id, role: "admin", scopes: ["*"] };
+    await expect(executeEmailAction(context.store, adminAuth, "email", "audience-create", input, deps)).rejects.toThrow(/idempotency key belongs to another actor/);
+    expect(await context.store.listRecords(context.userId, { moduleId: "email", recordType: "audience", limit: 20 })).toHaveLength(1);
+    expect(await context.store.listRecords(context.userId, { moduleId: "email", recordType: "email-command-receipt", limit: 20 })).toHaveLength(1);
   });
 
   it("suppresses before dispatch and allows only a newer explicit unsubscribe reconfirmation", async () => {
@@ -199,6 +209,94 @@ describe("clean-room AI-native Letterline email workflow", () => {
     await expect(context.run("subscriber-reactivate", { subscriberId: activeSubscriber.id, audienceId: listRecord.id, consent: consent("2026-09-01T17:00:00.000Z", "2", { reconfirmationAfterSuppression: true }), idempotencyKey: key("complaint-reactivate") }, providerClock)).rejects.toThrow(/cannot be reactivated/);
     const analytics = await context.run("campaign-analytics-aggregate", { campaignId: flow.campaign.id, from: "2026-09-01T00:00:00.000Z", to: "2026-09-02T00:00:00.000Z" }, providerClock);
     expect(analytics.audit).toMatchObject({ verifiedProviderReceiptCount: 2, counts: { delivered: 1, complaint: 1 }, opens: null, clicks: null, revenue: null, attribution: null, fabricatedMetrics: false });
+  });
+
+  it("fails closed when subscriber or provider-event scans reach their bounded safety limit", async () => {
+    const context = await fixture();
+    const listRecord = await audience(context, "saturation");
+    const suppressedSubscriber = await subscriber(context, listRecord.id, "saturation-suppressed");
+    const activeSubscriber = await subscriber(context, listRecord.id, "saturation-active");
+    await context.run("subscriber-suppress", { subscriberId: suppressedSubscriber.id, reason: "unsubscribe", occurredAt: "2026-08-24T17:00:00.000Z", evidenceHash: "9".repeat(64), note: "Saturation safety fixture", idempotencyKey: key("saturation-suppress") });
+
+    const originalListRecords = context.store.listRecords.bind(context.store);
+    let saturatedRecordType: string | undefined = "subscriber";
+    const listRecords = vi.spyOn(context.store, "listRecords").mockImplementation(async (userId, input) => {
+      if (input.moduleId === "email" && input.recordType === saturatedRecordType && input.limit === emailBoundedScanLimit + 1) {
+        return Array.from({ length: emailBoundedScanLimit + 1 }, () => activeSubscriber);
+      }
+      return originalListRecords(userId, input);
+    });
+
+    expect(emailBoundedScanLimit).toBe(100_000);
+    await expect(context.run("subscriber-opt-in-record", {
+      audienceId: listRecord.id,
+      email: "reader-saturation-suppressed@example.com",
+      consent: consent("2026-08-24T17:30:00.000Z", "8"),
+      idempotencyKey: key("saturation-opt-in"),
+    })).rejects.toThrow(/bounded email\/subscriber scan is saturated/);
+
+    saturatedRecordType = undefined;
+    const flow = await campaignThroughDispatch(context, listRecord.id, "saturation");
+    saturatedRecordType = "provider-receipt";
+    await expect(context.run("provider-receipt-ingest", {
+      dispatchPlanId: flow.plan.id,
+      subscriberId: activeSubscriber.id,
+      eventId: "provider.saturation.0001",
+      eventType: "delivered",
+      occurredAt: "2026-09-01T16:01:00.000Z",
+      providerMessageRefHash: "7".repeat(64),
+      gatewayVerification: { verified: true, verifierId: "signed-webhook-gateway-v1", verifiedAt: "2026-09-01T16:01:01.000Z", payloadHash: "6".repeat(64) },
+      idempotencyKey: key("saturation-provider-event"),
+    }, providerClock)).rejects.toThrow(/bounded email\/provider-receipt scan is saturated/);
+
+    expect(listRecords.mock.calls).toEqual(expect.arrayContaining([
+      [context.userId, { moduleId: "email", recordType: "subscriber", limit: emailBoundedScanLimit + 1 }],
+      [context.userId, { moduleId: "email", recordType: "provider-receipt", limit: emailBoundedScanLimit + 1 }],
+    ]));
+    listRecords.mockRestore();
+  });
+
+  it("requires fresh single-use approval decisions and binds them at the receipt boundary", async () => {
+    const context = await fixture();
+    const listRecord = await audience(context, "approval-guard");
+    const decisionLookups = vi.spyOn(context.store, "findApprovalDecisionReceipt");
+    const recordLists = vi.spyOn(context.store, "listRecords");
+    const stale = { ...approval(context.auth, "stale-clock"), approvedAt: new Date(clock.getTime() - 24 * 60 * 60 * 1_000 - 1).toISOString() };
+    await expect(context.run("audience-export", { audienceId: listRecord.id, format: "canonical-json", includeSuppressed: false, dryRun: false, approval: stale, idempotencyKey: key("stale-clock-export") })).rejects.toThrow(/stale|24 hours/);
+
+    const sharedDecision = approval(context.auth, "single-use");
+    await context.run("audience-export", { audienceId: listRecord.id, format: "canonical-json", includeSuppressed: false, dryRun: false, approval: sharedDecision, idempotencyKey: key("single-use-export") });
+    const receipt = (await context.store.listRecords(context.userId, { moduleId: "email", recordType: "email-command-receipt", limit: 100 })).find((record) => record.data.idempotencyKey === key("single-use-export"));
+    expect(receipt?.data).toMatchObject({ actionId: "audience-export", actorUserId: context.userId, approvalDecisionId: sharedDecision.decisionId, approvedBy: context.userId, approvedAt: clock.toISOString() });
+
+    const campaign = first(await context.run("campaign-create", { audienceId: listRecord.id, name: "Approval reuse guard", objective: "Reject a reused decision across actions.", idempotencyKey: key("reuse-campaign") }));
+    const drafted = await context.run("campaign-version-draft", { campaignId: campaign.id, expectedCampaignVersion: 1, subject: "Approval reuse guard", senderName: "Example", replyToEmail: "hello@example.com", bodyText: "Reviewed notes. {{unsubscribe_url}}", footer: "Example · {{unsubscribe_url}}", idempotencyKey: key("reuse-draft") });
+    const campaignVersion = first(drafted, "campaign-version");
+    const contentHash = String(campaignVersion.data.contentHash);
+    const reviewed = await context.run("campaign-review-record", { campaignId: campaign.id, campaignVersionId: campaignVersion.id, expectedCampaignVersion: 2, contentHash, decision: "approved-for-approval", checklist: { consentBoundaryReviewed: true, claimsReviewed: true, unsubscribeMechanismReviewed: true, senderIdentityReviewed: true }, reason: "Reviewed the exact campaign boundary.", idempotencyKey: key("reuse-review") });
+    const review = first(reviewed, "campaign-review");
+    await expect(context.run("campaign-approve", { campaignId: campaign.id, campaignVersionId: campaignVersion.id, expectedCampaignVersion: 3, contentHash, reviewId: review.id, dryRun: false, approval: sharedDecision, idempotencyKey: key("reuse-approve") })).rejects.toThrow(/approval decision was already used/);
+    expect(await context.store.listRecords(context.userId, { moduleId: "email", recordType: "campaign-approval", limit: 20 })).toHaveLength(0);
+    expect(decisionLookups).toHaveBeenCalledWith(context.userId, sharedDecision.decisionId);
+    expect(recordLists.mock.calls.filter(([, query]) => query.recordType === "email-command-receipt")).toHaveLength(1);
+  });
+
+  it("rejects another requester's private AI audit as evidence through the full trusted transaction path", async () => {
+    const context = await fixture();
+    const listRecord = await audience(context, "private-evidence");
+    const campaign = first(await context.run("campaign-create", { audienceId: listRecord.id, name: "Private evidence", objective: "Keep requester audits private.", idempotencyKey: key("private-campaign") }));
+    const ownerQueued = await context.run("body-propose", { campaignId: campaign.id, instruction: "Prepare the owner's private cited proposal.", evidenceIds: [listRecord.id], idempotencyKey: key("private-owner-ai") });
+    const privateAudit = first(ownerQueued, "email-ai-request-audit");
+    const memberId = randomUUID();
+    await context.store.addWorkspaceMember(context.userId, memberId, "member");
+    const memberAuth: EmailAuthorization = { userId: memberId, workspaceId: context.workspace.id, role: "member", scopes: ["*"] };
+    expect(await context.store.getRecord(memberId, privateAudit.id)).toBeUndefined();
+    await expect(executeEmailAction(context.store, memberAuth, "email", "body-propose", {
+      campaignId: campaign.id,
+      instruction: "Attempt to use another requester's private audit.",
+      evidenceIds: [privateAudit.id],
+      idempotencyKey: key("private-member-ai"),
+    }, deps)).rejects.toThrow(/AI evidence record was not found/);
   });
 
   it("queues cited AI proposals under the immutable policy and never mutates a campaign", async () => {

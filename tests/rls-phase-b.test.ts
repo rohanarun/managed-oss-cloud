@@ -20,7 +20,7 @@ describe("suite RLS phase B", () => {
     const migrations = await loadDatabaseMigrations();
     const phaseB = migrations.find((migration) => migration.version === "006");
     expect(phaseB?.name).toBe("database-role-and-rls-enforcement");
-    expect(migrations.map((migration) => migration.version)).toEqual(["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014"]);
+    expect(migrations.map((migration) => migration.version)).toEqual(["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018"]);
     for (const table of suiteTables) {
       expect(phaseB?.sql).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
       expect(phaseB?.sql).toContain(`ALTER TABLE ${table} FORCE ROW LEVEL SECURITY`);

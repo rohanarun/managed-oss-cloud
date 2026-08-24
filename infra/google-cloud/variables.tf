@@ -379,6 +379,22 @@ variable "consent_policy_signing_secret_version" {
   }
 }
 
+variable "extended_external_evidence_secret_name" {
+  description = "Existing Secret Manager secret used only by trusted hosting-layer source adapters to attest exact external payment, access, usage, and scanner evidence."
+  type        = string
+  default     = "managed-oss-extended-external-evidence-hmac"
+}
+
+variable "extended_external_evidence_secret_version" {
+  description = "Pinned enabled Secret Manager version containing the external-evidence HMAC secret."
+  type        = string
+  default     = "1"
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.extended_external_evidence_secret_version))
+    error_message = "Secret versions must be explicit positive integers, never latest."
+  }
+}
+
 variable "google_oauth_client_id_secret_name" {
   description = "Existing Secret Manager secret containing the platform-owned Google OAuth client ID."
   type        = string

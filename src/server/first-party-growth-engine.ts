@@ -8,6 +8,7 @@ import {
   type FirstPartyGrowthScope,
 } from "../shared/first-party-growth-actions.js";
 import type { SuiteStore } from "./suite-store.js";
+import { canReadSuiteRecord } from "./suite-record-visibility.js";
 import { firstPartyGrowthPromptDigest, firstPartyGrowthPromptPolicies } from "./prompts/first-party-growth.js";
 
 export interface FirstPartyGrowthAuthorization {
@@ -20,6 +21,7 @@ export interface FirstPartyGrowthAuthorization {
 export interface FirstPartyGrowthApproval {
   approved: true;
   approvedBy: string;
+  approvedAt: string;
   decisionId: string;
   reason: string;
 }
@@ -56,10 +58,27 @@ const defaults: FirstPartyGrowthEngineDependencies = {
   randomBytes,
 };
 const receiptRecordType = "growth-command-receipt";
+export const firstPartyGrowthApprovalFreshnessMs = 24 * 60 * 60 * 1_000;
 // This matches the largest current workspace record quota. SuiteStore does not yet
 // expose an indexed JSON receipt lookup, so correctness must not silently stop at
 // the most recent receipts. The production follow-up is an indexed store method.
 const maxRecordScan = 5_000_000;
+
+function visibilityScopedStore(store: SuiteStore, auth: FirstPartyGrowthAuthorization): SuiteStore {
+  return new Proxy(store, {
+    get(target, property) {
+      if (property === "getRecord") {
+        return async (userId: string, recordId: string) => {
+          if (userId !== auth.userId) return undefined;
+          const record = await target.getRecord(userId, recordId);
+          return record && canReadSuiteRecord({ userId: auth.userId, workspaceId: auth.workspaceId, role: auth.role }, record) ? record : undefined;
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -177,10 +196,35 @@ async function list(store: SuiteStore, userId: string, moduleId: FirstPartyGrowt
   return store.listRecords(userId, { moduleId, recordType, limit: maxRecordScan });
 }
 
-function approval(input: Record<string, unknown>, auth: FirstPartyGrowthAuthorization): FirstPartyGrowthApproval {
+function approval(input: Record<string, unknown>, auth: FirstPartyGrowthAuthorization, now: Date): FirstPartyGrowthApproval {
   const candidate = input.approval as FirstPartyGrowthApproval | undefined;
-  if (!candidate || candidate.approved !== true || candidate.approvedBy !== auth.userId || !candidate.reason?.trim() || !/^[A-Za-z0-9._:-]{16,200}$/.test(candidate.decisionId ?? "")) throw new Error("An attributable, reasoned, uniquely identified human approval is required when dryRun is false.");
-  return candidate;
+  const approvedAt = new Date(String(candidate?.approvedAt ?? ""));
+  if (!candidate || candidate.approved !== true || candidate.approvedBy !== auth.userId || !candidate.reason?.trim() || !/^[A-Za-z0-9._:-]{16,200}$/.test(candidate.decisionId ?? "") || !Number.isFinite(approvedAt.getTime())) throw new Error("An attributable, reasoned, fresh, uniquely identified human approval is required when dryRun is false.");
+  if (approvedAt.getTime() > now.getTime()) throw new Error("Human approval cannot be future-dated.");
+  if (now.getTime() - approvedAt.getTime() > firstPartyGrowthApprovalFreshnessMs) throw new Error("Human approval is stale and must be reviewed again against the current request.");
+  return { ...candidate, approvedAt: approvedAt.toISOString(), reason: candidate.reason.trim() };
+}
+
+function receiptApprovalDecisionId(receipt: SuiteRecord) {
+  const topLevel = receipt.data.approvalDecisionId;
+  const audit = receipt.data.audit;
+  if (!audit || typeof audit !== "object" || Array.isArray(audit)) {
+    if (topLevel !== undefined && topLevel !== null) throw new Error("A stored growth command receipt has inconsistent approval attribution.");
+    return null;
+  }
+  const nested = (audit as Record<string, unknown>).approvalDecisionId;
+  if ((topLevel === null && nested !== undefined && nested !== null) || (topLevel !== undefined && topLevel !== null && topLevel !== nested)) throw new Error("A stored growth command receipt has inconsistent approval attribution.");
+  if (nested === undefined || nested === null) return null;
+  if (typeof nested !== "string" || !/^[A-Za-z0-9._:-]{16,200}$/.test(nested)) throw new Error("A stored growth command receipt has malformed approval attribution.");
+  return nested;
+}
+
+async function assertApprovalUnused(store: SuiteStore, auth: FirstPartyGrowthAuthorization, decisionId: string) {
+  const receipt = await store.findApprovalDecisionReceipt(auth.userId, decisionId);
+  if (receipt) {
+    if (receipt.recordType === receiptRecordType) receiptApprovalDecisionId(receipt);
+    throw new Error("The human approval decision ID is already bound to another committed command.");
+  }
 }
 
 function publicHttps(value: unknown, label: string) {
@@ -233,8 +277,9 @@ async function authorize(store: SuiteStore, auth: FirstPartyGrowthAuthorization,
 }
 
 async function replay(store: SuiteStore, auth: FirstPartyGrowthAuthorization, action: FirstPartyGrowthActionDefinition, key: string, requestHash: string) {
-  const receipt = (await list(store, auth.userId, action.moduleId, receiptRecordType)).find((record) => record.data.idempotencyKey === key);
+  const receipt = await store.findCommandReceipt(auth.userId, { recordType: receiptRecordType, moduleId: action.moduleId, actionId: action.id, idempotencyKey: key });
   if (!receipt) return undefined;
+  if (receipt.data.actorUserId !== auth.userId) throw new Error("The idempotency key is already bound to another authenticated actor.");
   if (receipt.data.actionId !== action.id || receipt.data.requestHash !== requestHash) throw new Error("The idempotency key was already used for a different command.");
   const records: SuiteRecord[] = [];
   for (const recordId of Array.isArray(receipt.data.resultRecordIds) ? receipt.data.resultRecordIds : []) {
@@ -246,7 +291,7 @@ async function replay(store: SuiteStore, auth: FirstPartyGrowthAuthorization, ac
 }
 
 async function saveReceipt(store: SuiteStore, auth: FirstPartyGrowthAuthorization, action: FirstPartyGrowthActionDefinition, key: string, requestHash: string, execution: FirstPartyGrowthExecutionResult) {
-  const receipt = await create(store, auth.userId, { moduleId: action.moduleId, recordType: receiptRecordType, title: `${action.id} · ${key.slice(0, 48)}`, state: "recorded", data: { actionId: action.id, idempotencyKey: key, requestHash, resultRecordIds: execution.records.map((record) => record.id), aiActionId: execution.aiAction?.id, audit: execution.audit, actorUserId: auth.userId, workspaceId: auth.workspaceId, immutable: true } });
+  const receipt = await create(store, auth.userId, { moduleId: action.moduleId, recordType: receiptRecordType, title: `${action.id} · ${key.slice(0, 48)}`, state: "recorded", data: { actionId: action.id, idempotencyKey: key, requestHash, resultRecordIds: execution.records.map((record) => record.id), aiActionId: execution.aiAction?.id, audit: execution.audit, actorUserId: auth.userId, workspaceId: auth.workspaceId, approvalDecisionId: execution.audit.approvalDecisionId ?? null, immutable: true } });
   execution.audit = { ...execution.audit, receiptId: receipt.id, requestHash, replayed: false };
   return execution;
 }
@@ -773,27 +818,34 @@ export async function executeFirstPartyGrowthAction(
   };
   return store.runInWorkspaceTransaction(auth.userId, async (workspace) => {
     if (workspace.id !== auth.workspaceId) throw new Error("The storage transaction belongs to another workspace.");
-    await authorize(store, auth, action);
-    if (action.operation === "read") return executeCommand(store, auth, action, input, deps, false);
+    const scopedStore = visibilityScopedStore(store, auth);
+    await authorize(scopedStore, auth, action);
+    const trustedNow = deps.now();
+    if (!(trustedNow instanceof Date) || !Number.isFinite(trustedNow.getTime())) throw new Error("The trusted server clock is invalid.");
+    const transactionDeps = { ...deps, now: () => trustedNow };
+    if (action.operation === "read") return executeCommand(scopedStore, auth, action, input, transactionDeps, false);
     const key = String(input.idempotencyKey);
-    const requestHash = digest({ workspaceId: auth.workspaceId, moduleId: action.moduleId, actionId: action.id, input });
-    const prior = await replay(store, auth, action, key, requestHash);
+    const requestHash = digest({ workspaceId: auth.workspaceId, actorUserId: auth.userId, moduleId: action.moduleId, actionId: action.id, input });
+    const prior = await replay(scopedStore, auth, action, key, requestHash);
     if (prior) return prior;
-    if (action.operation === "ai") return saveReceipt(store, auth, action, key, requestHash, await queueAi(store, auth, action, input, deps));
+    if (action.operation === "ai") return saveReceipt(scopedStore, auth, action, key, requestHash, await queueAi(scopedStore, auth, action, input, transactionDeps));
     const highRisk = action.destructive || action.externalEffect;
     const dryRun = highRisk && input.dryRun === true;
     let approvalRecord: FirstPartyGrowthApproval | undefined;
-    if (highRisk && !dryRun) approvalRecord = approval(input, auth);
-    const execution = await executeCommand(store, auth, action, input, deps, !dryRun);
+    if (highRisk && !dryRun) {
+      approvalRecord = approval(input, auth, trustedNow);
+      await assertApprovalUnused(scopedStore, auth, approvalRecord.decisionId);
+    }
+    const execution = await executeCommand(scopedStore, auth, action, input, transactionDeps, !dryRun);
     execution.audit = {
       ...execution.audit,
       dryRun,
       effectBoundary: action.effectBoundary,
       providerCallStarted: false,
       autonomousExternalSideEffect: false,
-      ...(approvalRecord ? { approvalDecisionId: approvalRecord.decisionId, approvedBy: approvalRecord.approvedBy, approvalReason: approvalRecord.reason } : {}),
+      ...(approvalRecord ? { approvalDecisionId: approvalRecord.decisionId, approvedBy: approvalRecord.approvedBy, approvedAt: approvalRecord.approvedAt, approvalReason: approvalRecord.reason } : {}),
     };
-    return saveReceipt(store, auth, action, key, requestHash, execution);
+    return saveReceipt(scopedStore, auth, action, key, requestHash, execution);
   });
 }
 
@@ -806,21 +858,22 @@ export async function recordFirstPartyGrowthAiCompletion(
 ) {
   return store.runInWorkspaceTransaction(auth.userId, async (workspace) => {
     if (workspace.id !== auth.workspaceId) throw new Error("The storage transaction belongs to another workspace.");
-    const aiAction = await store.getAiAction(auth.userId, aiActionId);
+    const scopedStore = visibilityScopedStore(store, auth);
+    const aiAction = await scopedStore.getAiAction(auth.userId, aiActionId);
     if (!aiAction || aiAction.workspaceId !== auth.workspaceId || aiAction.status !== "completed") throw new Error("The completed tenant AI action was not found.");
     const action = firstPartyGrowthAction(aiAction.moduleId, String(aiAction.context.actionId));
     if (!action || action.operation !== "ai" || action.promptId !== aiAction.context.promptId || action.promptVersion !== aiAction.context.promptVersion || firstPartyGrowthPromptDigest(action.moduleId) !== aiAction.context.promptDigest) throw new Error("The completed AI action does not match a trusted first-party prompt boundary.");
-    await authorize(store, auth, action);
+    await authorize(scopedStore, auth, action);
     const allowedEvidenceIds = Array.isArray(aiAction.context.evidenceIds) ? aiAction.context.evidenceIds.filter((recordId): recordId is string => typeof recordId === "string") : [];
     const completion = validateFirstPartyGrowthAiCompletion(value ?? aiAction.result, allowedEvidenceIds);
-    const auditRecord = await owned(store, auth.userId, aiAction.context.aiAuditRecordId, action.moduleId, "ai-request-audit", "aiAuditRecordId");
+    const auditRecord = await owned(scopedStore, auth.userId, aiAction.context.aiAuditRecordId, action.moduleId, "ai-request-audit", "aiAuditRecordId");
     const resultHash = digest(completion);
     if (auditRecord.data.resultHash) {
       if (auditRecord.data.resultHash !== resultHash) throw new Error("The AI audit record is already bound to a different completion.");
       return { auditRecord, completion, replayed: true };
     }
     if (auditRecord.data.promptDigest !== aiAction.context.promptDigest || auditRecord.data.reviewStatus !== "pending-model") throw new Error("The AI audit record is stale or does not match the queued boundary.");
-    const recorded = await update(store, auth.userId, auditRecord.id, { state: "pending-human-review", data: { executedModel: completion.model, confidence: completion.confidence, evidenceIds: completion.evidence, assumptions: completion.assumptions, reviewStatus: completion.reviewStatus, approvalRequired: true, resultHash, completedAt: completedAt.toISOString(), externalEffectExecuted: false } });
+    const recorded = await update(scopedStore, auth.userId, auditRecord.id, { state: "pending-human-review", data: { executedModel: completion.model, confidence: completion.confidence, evidenceIds: completion.evidence, assumptions: completion.assumptions, reviewStatus: completion.reviewStatus, approvalRequired: true, resultHash, completedAt: completedAt.toISOString(), externalEffectExecuted: false } });
     return { auditRecord: recorded, completion, replayed: false };
   });
 }

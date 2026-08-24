@@ -68,6 +68,14 @@ resource "google_secret_manager_secret_iam_member" "consent_policy_signing" {
   depends_on = [google_project_service.secret_manager]
 }
 
+resource "google_secret_manager_secret_iam_member" "extended_external_evidence" {
+  project    = var.project_id
+  secret_id  = var.extended_external_evidence_secret_name
+  role       = "roles/secretmanager.secretAccessor"
+  member     = "serviceAccount:${google_service_account.runtime.email}"
+  depends_on = [google_project_service.secret_manager]
+}
+
 locals {
   google_oauth_secret_names = toset([
     var.google_oauth_client_id_secret_name,
@@ -285,6 +293,7 @@ resource "google_compute_instance" "managed_oss" {
     WORKER_BOOTSTRAP_TOKEN="$(access_secret '${var.worker_bootstrap_secret_name}' '${var.worker_bootstrap_secret_version}')"
     GATEWAY_RECONCILER_TOKEN="$(access_secret '${var.gateway_reconciler_secret_name}' '${var.gateway_reconciler_secret_version}')"
     CONSENT_POLICY_SIGNING_PRIVATE_KEY="$(access_secret '${var.consent_policy_signing_secret_name}' '${var.consent_policy_signing_secret_version}')"
+    EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET="$(access_secret '${var.extended_external_evidence_secret_name}' '${var.extended_external_evidence_secret_version}')"
     GOOGLE_OAUTH_CLIENT_ID="$(access_secret '${var.google_oauth_client_id_secret_name}' '${var.google_oauth_client_id_secret_version}')"
     GOOGLE_OAUTH_CLIENT_SECRET="$(access_secret '${var.google_oauth_client_secret_secret_name}' '${var.google_oauth_client_secret_secret_version}')"
     GOOGLE_OAUTH_STATE_SECRET="$(access_secret '${var.google_oauth_state_secret_name}' '${var.google_oauth_state_secret_version}')"
@@ -304,6 +313,7 @@ resource "google_compute_instance" "managed_oss" {
     ${var.worker_count > 0 ? "GCP_WORKER_IDENTITY_AUDIENCE=https://${var.control_plane_domain}/api/agent/register\n    GCP_WORKER_IDENTITY_PROJECT_ID=${var.project_id}\n    GCP_WORKER_IDENTITY_INSTANCE_NAMES=${join(",", [for index in range(var.worker_count) : "${var.instance_name}-worker-${index}"])}\n    GCP_WORKER_IDENTITY_ZONES=${var.zone}" : ""}
     CONSENT_POLICY_SIGNING_PRIVATE_KEY=$${CONSENT_POLICY_SIGNING_PRIVATE_KEY}
     CONSENT_POLICY_PREVIOUS_PUBLIC_KEYS_JSON=${jsonencode(var.consent_policy_previous_public_keys)}
+    EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET=$${EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET}
     EOF
     cat > /opt/managed-oss/config/gateway.env <<EOF
     GATEWAY_RECONCILER_TOKEN=$${GATEWAY_RECONCILER_TOKEN}
@@ -387,7 +397,23 @@ resource "google_compute_instance" "managed_oss" {
     /opt/managed-oss/security/metadata-firewall-proof.sh "$${CONTROL_PLANE_IMAGE}" > /opt/managed-oss/security/control-plane-metadata-proof.json
     jq -e '.ok == true and .hostMetadata == true and .bridgeIpv4Blocked == true and .bridgeIpv6Blocked == true' /opt/managed-oss/security/control-plane-metadata-proof.json >/dev/null
     chmod 0640 /opt/managed-oss/security/control-plane-metadata-proof.json
-    docker-compose pull
+    docker-compose --profile operations pull
+    docker-compose up -d database
+    DATABASE_READY=false
+    for attempt in $(seq 1 60); do
+      if docker-compose exec -T database pg_isready -q -h 127.0.0.1 -U opendock -d opendock; then
+        DATABASE_READY=true
+        break
+      fi
+      sleep 2
+    done
+    [[ "$${DATABASE_READY}" == "true" ]]
+    printf '%s\n' "$${POSTGRES_PASSWORD}" | docker-compose exec -T database sh -ceu '
+      IFS= read -r PGPASSWORD
+      export PGPASSWORD
+      psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U opendock -d opendock -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+    '
+    POSTGRES_PASSWORD=""
     docker-compose --profile operations run --rm migrate
     MANAGED_OSS_COMPOSE_DIR=/opt/managed-oss/config /opt/managed-oss/database/configure-role-logins.sh
     docker-compose up -d

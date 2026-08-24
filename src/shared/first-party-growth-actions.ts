@@ -47,10 +47,11 @@ const uuidArray = (maxItems = 100) => ({ type: "array", maxItems, items: uuid })
 const stringArray = (maxItems = 100, maxLength = 500) => ({ type: "array", maxItems, items: text(maxLength) });
 const approval = {
   type: "object",
-  required: ["approved", "approvedBy", "decisionId", "reason"],
+  required: ["approved", "approvedBy", "approvedAt", "decisionId", "reason"],
   properties: {
     approved: { const: true },
     approvedBy: uuid,
+    approvedAt: dateTime,
     decisionId: idempotencyKey,
     reason: text(1_000),
   },

@@ -21,6 +21,10 @@ describe("suite RLS phase A", () => {
       { version: "012", name: "managed-oauth-broker" },
       { version: "013", name: "billing-capacity-atomicity" },
       { version: "014", name: "suite-storage-accounting" },
+      { version: "015", name: "runtime-resource-reservations" },
+      { version: "016", name: "additive-extended-ai-contracts" },
+      { version: "017", name: "ai-requester-claim-visibility" },
+      { version: "018", name: "domain-identity-invariants" },
     ]);
     const phaseA = migrations[2].sql;
     expect(phaseA).toMatch(/managed_oss_suite_owner NOLOGIN NOSUPERUSER[\s\S]*NOBYPASSRLS/);
@@ -33,6 +37,15 @@ describe("suite RLS phase A", () => {
     expect(phaseA).not.toMatch(/(?:ENABLE|FORCE) ROW LEVEL SECURITY/i);
     expect(readFileSync("db/schema.sql", "utf8")).not.toContain("managed_oss_runtime");
     expect(readFileSync("db/suite-schema.sql", "utf8")).not.toContain("managed_oss_runtime");
+    const aiVisibility = migrations.find((migration) => migration.version === "017")?.sql ?? "";
+    expect(aiVisibility).toMatch(/managed_oss_ai_action_requester_principal[\s\S]*SECURITY DEFINER[\s\S]*SET search_path=pg_catalog/);
+    expect(aiVisibility).toContain("action.status='running'");
+    expect(aiVisibility).toContain("action.context->>'requestedByUserId'");
+    expect(aiVisibility).toContain("GRANT EXECUTE ON FUNCTION managed_oss_ai_action_requester_principal(UUID) TO managed_oss_ai");
+    expect(aiVisibility).not.toMatch(/GRANT SELECT[\s\S]*suite_workspace_members[\s\S]*managed_oss_ai/);
+    expect(aiVisibility).toContain("CREATE UNIQUE INDEX IF NOT EXISTS suite_records_command_idempotency_unique");
+    expect(aiVisibility).toContain("CREATE UNIQUE INDEX IF NOT EXISTS suite_records_approval_decision_unique");
+    expect(aiVisibility).toContain("data#>>'{resultSnapshot,audit,approvalDecisionId}'");
   });
 
   it("keeps SuiteStore queries transaction-local and routes cross-workspace lookups through resolvers", () => {

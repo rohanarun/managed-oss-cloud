@@ -75,6 +75,7 @@ const environmentSchema = z.object({
   GOOGLE_OAUTH_ASSERTION_PUBLIC_KEY: z.string().min(40).optional(),
   CONSENT_POLICY_SIGNING_PRIVATE_KEY: z.string().min(64).optional(),
   CONSENT_POLICY_PREVIOUS_PUBLIC_KEYS_JSON: z.string().default("[]"),
+  EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET: z.string().min(32).optional(),
   AI_MODE: z.enum(["disabled", "openai-compatible"]).default("disabled"),
   AI_BASE_URL: z.string().url().default("http://127.0.0.1:11434/v1"),
   AI_MODEL: z.string().trim().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/).default("qwen3:4b"),

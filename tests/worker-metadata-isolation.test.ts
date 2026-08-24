@@ -33,11 +33,13 @@ describe("private worker metadata and OAuth isolation", () => {
   it("limits operational secrets to the control-plane and gateway processes that use them", () => {
     const runtimeStart = terraform.indexOf("cat > /opt/managed-oss/config/runtime.env");
     const runtimeHereDoc = terraform.slice(runtimeStart, terraform.indexOf("\n    EOF", runtimeStart));
-    for (const secret of ["WORKER_BOOTSTRAP_TOKEN", "GATEWAY_RECONCILER_TOKEN", "CONSENT_POLICY_SIGNING_PRIVATE_KEY", "CONSENT_POLICY_PREVIOUS_PUBLIC_KEYS_JSON"]) {
+    for (const secret of ["WORKER_BOOTSTRAP_TOKEN", "GATEWAY_RECONCILER_TOKEN", "CONSENT_POLICY_SIGNING_PRIVATE_KEY", "CONSENT_POLICY_PREVIOUS_PUBLIC_KEYS_JSON", "EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET"]) {
       expect(runtimeHereDoc).not.toContain(secret);
     }
     expect(controlService).toContain("control-plane.env");
     expect(controlService).toContain("gateway.env");
+    expect(controlResource).toContain("EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET=\"$(access_secret");
+    expect(workerResource).not.toContain("EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET");
     const untrustedServices = controlCompose.slice(controlCompose.indexOf("  migrate:"), controlCompose.indexOf("  gateway-reconciler:"));
     expect(untrustedServices).not.toContain("control-plane.env");
     expect(untrustedServices).not.toContain("gateway.env");
@@ -71,7 +73,7 @@ describe("private worker metadata and OAuth isolation", () => {
     const firewallEnable = controlResource.indexOf("systemctl enable --now managed-oss-metadata-firewall.service");
     const directPull = controlResource.indexOf('docker pull "$${CONTROL_PLANE_IMAGE}"');
     const firewallProofCall = controlResource.indexOf('metadata-firewall-proof.sh "$${CONTROL_PLANE_IMAGE}"');
-    const firstCompose = controlResource.indexOf("docker-compose pull");
+    const firstCompose = controlResource.indexOf("docker-compose --profile operations pull");
     expect(secretAccess).toBeGreaterThan(0);
     expect(firewallEnable).toBeGreaterThan(secretAccess);
     expect(directPull).toBeGreaterThan(firewallEnable);

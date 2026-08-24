@@ -59,7 +59,7 @@ describe("Letterline integration", () => {
   it("pins exact evidence and atomic PostgreSQL completion contracts", () => {
     const worker = readFileSync("src/server/ai-worker.ts", "utf8");
     const migration = readFileSync("db/migrations/011-email-atomicity-and-invariants.sql", "utf8");
-    expect(worker).toContain('version === "letterline-ai-result.v1"');
+    expect(worker).toContain('contractVersion === "letterline-ai-result.v1"');
     expect(worker).toContain("emailPromptDigest()");
     expect(worker).toContain("validateEmailAiCompletion");
     expect(worker).toContain("targetRecordHash");

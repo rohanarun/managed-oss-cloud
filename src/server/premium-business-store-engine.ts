@@ -10,6 +10,7 @@ import {
   type PremiumModuleId,
 } from "../shared/premium-business-actions.js";
 import type { SuiteStore } from "./suite-store.js";
+import { canReadSuiteRecord } from "./suite-record-visibility.js";
 import { premiumBusinessPromptDigest, premiumBusinessPromptPolicies } from "./prompts/premium-business.js";
 import { suiteStorageAccounting } from "../shared/suite-quotas.js";
 
@@ -22,6 +23,7 @@ export interface PremiumBusinessAuthorization {
 
 export interface PremiumBusinessStoreDependencies {
   now: () => Date;
+  modelPolicyId: string;
 }
 
 export interface PremiumBusinessStoreResult {
@@ -52,8 +54,22 @@ export const premiumBusinessAiResultContract = {
   approvalRequired: true,
 } as const;
 
+interface AssistantEvidenceBinding {
+  attachmentRecordId: string;
+  attachmentVersion: number;
+  attachmentSnapshotHash: string;
+  collectionId: string;
+  sourceRecordId: string;
+  sourceModuleId: string;
+  sourceRecordType: string;
+  sourceVersion: number;
+  sourceSnapshotHash: string;
+  contentHash: string;
+}
+
 const receiptType = "premium-command-receipt";
 const aiAuditType = "premium-ai-request-audit";
+export const premiumBusinessBoundedScanLimit = 100_000;
 const forbiddenKeys = new Set(["apikey", "secret", "password", "accesstoken", "refreshtoken", "authorization", "cookie", "privatekey", "providersecret"]);
 const stateTransitions: Record<string, readonly string[]> = { backlog: ["ready"], ready: ["active"], active: ["blocked", "done"], blocked: ["active"], done: [] };
 
@@ -117,14 +133,22 @@ async function authorize(store: SuiteStore, auth: PremiumBusinessAuthorization, 
   if ((action.requiresApproval || action.destructive || action.externalEffect !== "none") && !["owner", "admin"].includes(auth.role)) throw new Error("Only owners or administrators may authorize this action.");
   return workspace;
 }
+function canRead(auth: PremiumBusinessAuthorization, record: SuiteRecord) {
+  return canReadSuiteRecord({ userId: auth.userId, workspaceId: auth.workspaceId, role: auth.role }, record);
+}
 async function owned(store: SuiteStore, auth: PremiumBusinessAuthorization, recordId: unknown, moduleId?: string, recordType?: string | readonly string[], label = "recordId") {
   if (typeof recordId !== "string") throw new Error(`${label} must be a record ID.`);
   const record = await store.getRecord(auth.userId, recordId); const allowed = typeof recordType === "string" ? [recordType] : recordType;
-  if (!record || record.workspaceId !== auth.workspaceId || (moduleId && record.moduleId !== moduleId) || (allowed && !allowed.includes(record.recordType))) throw new Error(`${label.replace(/Id$/, "")} not found in this workspace.`);
+  if (!record || record.workspaceId !== auth.workspaceId || (moduleId && record.moduleId !== moduleId) || (allowed && !allowed.includes(record.recordType)) || !canRead(auth, record)) throw new Error(`${label.replace(/Id$/, "")} not found in this workspace.`);
   return record;
 }
+async function boundedRecords(store: SuiteStore, auth: PremiumBusinessAuthorization, moduleId: PremiumModuleId, recordType: string) {
+  const records = await store.listRecords(auth.userId, { moduleId, recordType, limit: premiumBusinessBoundedScanLimit + 1 });
+  if (records.length > premiumBusinessBoundedScanLimit) throw new Error(`The bounded ${moduleId}/${recordType} scan is saturated; an indexed or paginated SuiteStore lookup is required before this action can run safely.`);
+  return records.filter((record) => canRead(auth, record));
+}
 async function create(store: SuiteStore, auth: PremiumBusinessAuthorization, input: Parameters<SuiteStore["createRecord"]>[1]) {
-  const record = await store.createRecord(auth.userId, { ...input, data: { version: 1, ...(input.data ?? {}) } }); if (!record) throw new Error("The premium record could not be persisted."); return record;
+  const record = await store.createRecord(auth.userId, { ...input, data: { version: 1, ...(input.data ?? {}), createdByUserId: auth.userId } }); if (!record) throw new Error("The premium record could not be persisted."); return record;
 }
 async function update(store: SuiteStore, auth: PremiumBusinessAuthorization, record: SuiteRecord, input: Parameters<SuiteStore["updateRecord"]>[2]) {
   const current = await owned(store, auth, record.id, record.moduleId, record.recordType); const nextVersion = recordVersion(current) + 1;
@@ -134,29 +158,143 @@ async function evidence(store: SuiteStore, auth: PremiumBusinessAuthorization, v
   const ids = strings(value, "evidenceIds", 100); if (options.include && !ids.includes(options.include)) throw new Error("The primary source must be included in evidenceIds.");
   const records: SuiteRecord[] = []; for (const recordId of ids) records.push(await owned(store, auth, recordId, options.moduleId, options.recordType, "evidenceId")); return records;
 }
+
+async function bindAssistantEvidence(store: SuiteStore, auth: PremiumBusinessAuthorization, selected: SuiteRecord[], collectionId?: string): Promise<AssistantEvidenceBinding[]> {
+  const workspace = await store.getOrCreateWorkspace(auth.userId);
+  if (selected.some((source) => !workspace.enabledModuleIds.includes(source.moduleId))) throw new Error("Every Assistant evidence source module must be enabled in this workspace.");
+  const attachments = (await boundedRecords(store, auth, "assistant", "source-attachment"))
+    .filter((record) => collectionId === undefined || record.data.collectionId === collectionId);
+  return selected.map((source) => {
+    const sourceSnapshotHash = digest(source);
+    const attachment = attachments.find((candidate) =>
+      candidate.data.recordId === source.id
+      && candidate.data.sourceModuleId === source.moduleId
+      && candidate.data.sourceRecordType === source.recordType
+      && candidate.data.sourceVersion === recordVersion(source)
+      && candidate.data.sourceSnapshotHash === sourceSnapshotHash
+      && typeof candidate.data.contentHash === "string"
+    );
+    if (!attachment) throw new Error("Every Assistant evidence record must be checksum-attached at its current exact version.");
+    return {
+      attachmentRecordId: attachment.id,
+      attachmentVersion: recordVersion(attachment),
+      attachmentSnapshotHash: digest(attachment),
+      collectionId: String(attachment.data.collectionId),
+      sourceRecordId: source.id,
+      sourceModuleId: source.moduleId,
+      sourceRecordType: source.recordType,
+      sourceVersion: recordVersion(source),
+      sourceSnapshotHash,
+      contentHash: String(attachment.data.contentHash),
+    };
+  });
+}
+
+export function premiumBusinessAiEvidenceRecords(action: SuiteAiAction, records: SuiteRecord[]): SuiteRecord[] {
+  const evidenceIds = Array.isArray(action.context.evidenceIds)
+    ? action.context.evidenceIds.filter((value): value is string => typeof value === "string")
+    : [];
+  if (!evidenceIds.length || new Set(evidenceIds).size !== evidenceIds.length) throw new Error("The premium AI action must select unique evidence records.");
+  const recordById = new Map(records.filter((record) => record.workspaceId === action.workspaceId).map((record) => [record.id, record]));
+  if (action.moduleId !== "assistant") {
+    const selected = evidenceIds.map((recordId) => recordById.get(recordId));
+    if (selected.some((record) => !record)) throw new Error("The complete authorized premium evidence selection is not available to the model worker.");
+    const rawSnapshots = action.context.evidenceSnapshots;
+    if (!Array.isArray(rawSnapshots) || rawSnapshots.length !== evidenceIds.length) throw new Error("Premium model work requires one exact snapshot per evidence record.");
+    const snapshotByRecord = new Map<string, { version: number; snapshotHash: string }>();
+    for (const [index, value] of rawSnapshots.entries()) {
+      const snapshot = plain(value, `evidenceSnapshots[${index}]`);
+      if (typeof snapshot.recordId !== "string"
+        || !evidenceIds.includes(snapshot.recordId)
+        || snapshotByRecord.has(snapshot.recordId)
+        || !Number.isSafeInteger(snapshot.version)
+        || Number(snapshot.version) < 1
+        || typeof snapshot.snapshotHash !== "string"
+        || !/^[a-f0-9]{64}$/.test(snapshot.snapshotHash)) throw new Error("Premium evidence snapshots must exactly match the selected evidence IDs.");
+      snapshotByRecord.set(snapshot.recordId, { version: Number(snapshot.version), snapshotHash: snapshot.snapshotHash });
+    }
+    return (selected as SuiteRecord[]).map((record) => {
+      const snapshot = snapshotByRecord.get(record.id);
+      if (!snapshot || recordVersion(record) !== snapshot.version || digest(record) !== snapshot.snapshotHash) throw new Error("The complete exact premium evidence selection is not available to the model worker.");
+      return record;
+    });
+  }
+
+  const rawBindings = action.context.assistantEvidenceBindings;
+  if (!Array.isArray(rawBindings) || rawBindings.length !== evidenceIds.length) throw new Error("Assistant model work requires one exact attachment binding per evidence record.");
+  const bindingBySource = new Map<string, AssistantEvidenceBinding>();
+  for (const [index, value] of rawBindings.entries()) {
+    const binding = plain(value, `assistantEvidenceBindings[${index}]`) as unknown as AssistantEvidenceBinding;
+    const stringFields: Array<keyof AssistantEvidenceBinding> = ["attachmentRecordId", "attachmentSnapshotHash", "collectionId", "sourceRecordId", "sourceModuleId", "sourceRecordType", "sourceSnapshotHash", "contentHash"];
+    if (stringFields.some((field) => typeof binding[field] !== "string" || !String(binding[field]).trim()) || !Number.isSafeInteger(binding.attachmentVersion) || binding.attachmentVersion < 1 || !Number.isSafeInteger(binding.sourceVersion) || binding.sourceVersion < 1) throw new Error("Assistant evidence contains an invalid attachment binding.");
+    if (!evidenceIds.includes(binding.sourceRecordId) || bindingBySource.has(binding.sourceRecordId)) throw new Error("Assistant evidence bindings must exactly match the selected evidence IDs.");
+    bindingBySource.set(binding.sourceRecordId, binding);
+  }
+
+  return evidenceIds.map((recordId) => {
+    const binding = bindingBySource.get(recordId);
+    const source = binding ? recordById.get(binding.sourceRecordId) : undefined;
+    const attachment = binding ? recordById.get(binding.attachmentRecordId) : undefined;
+    if (!binding || !source || !attachment
+      || source.moduleId !== binding.sourceModuleId
+      || source.recordType !== binding.sourceRecordType
+      || recordVersion(source) !== binding.sourceVersion
+      || digest(source) !== binding.sourceSnapshotHash
+      || attachment.moduleId !== "assistant"
+      || attachment.recordType !== "source-attachment"
+      || recordVersion(attachment) !== binding.attachmentVersion
+      || digest(attachment) !== binding.attachmentSnapshotHash
+      || attachment.data.collectionId !== binding.collectionId
+      || attachment.data.recordId !== source.id
+      || attachment.data.sourceModuleId !== source.moduleId
+      || attachment.data.sourceRecordType !== source.recordType
+      || attachment.data.sourceVersion !== binding.sourceVersion
+      || attachment.data.sourceSnapshotHash !== binding.sourceSnapshotHash
+      || attachment.data.contentHash !== binding.contentHash) {
+      throw new Error("The complete exact attached Assistant evidence selection is not available to the model worker.");
+    }
+    return source;
+  });
+}
 function humanApproval(auth: PremiumBusinessAuthorization, input: Record<string, unknown>, now: Date) {
   const approval = input.approval;
   if (!approval || typeof approval !== "object" || Array.isArray(approval)) throw new Error("An attributable human approval is required when dryRun is false.");
   const value = approval as Record<string, unknown>; const approvedAt = new Date(String(value.approvedAt));
-  if (value.approved !== true || value.approvedBy !== auth.userId || typeof value.reason !== "string" || value.reason.trim().length < 3 || !Number.isFinite(approvedAt.getTime()) || approvedAt.getTime() > now.getTime() + 300_000 || approvedAt.getTime() < now.getTime() - 86_400_000) throw new Error("An attributable, reasoned, recent human approval is required when dryRun is false.");
-  return { approvedBy: auth.userId, approvedAt: approvedAt.toISOString(), reason: value.reason.trim() };
+  if (value.approved !== true || value.approvedBy !== auth.userId || typeof value.reason !== "string" || value.reason.trim().length < 3 || typeof value.decisionId !== "string" || !/^[A-Za-z0-9._:-]{16,200}$/.test(value.decisionId) || !Number.isFinite(approvedAt.getTime()) || approvedAt.getTime() > now.getTime() + 300_000 || approvedAt.getTime() < now.getTime() - 86_400_000) throw new Error("An attributable, reasoned, recent, uniquely identified human approval is required when dryRun is false.");
+  return { approvedBy: auth.userId, approvedAt: approvedAt.toISOString(), decisionId: value.decisionId, reason: value.reason.trim() };
+}
+
+async function assertUnusedApprovalDecision(store: SuiteStore, auth: PremiumBusinessAuthorization, decisionId: string) {
+  if (await store.findApprovalDecisionReceipt(auth.userId, decisionId)) throw new Error("The human approval decision ID is already bound to another committed command.");
 }
 
 interface DurableOutcome { records: SuiteRecord[]; preview?: Record<string, unknown>; privateOutput?: Record<string, unknown>; aiAction?: SuiteAiAction; audit?: Record<string, unknown> }
 interface DurableContext { store: SuiteStore; auth: PremiumBusinessAuthorization; action: PremiumActionDefinition; input: Record<string, unknown>; now: Date; dryRun: boolean; deps: PremiumBusinessStoreDependencies }
 
+function trustedModelPolicyId(dependencies: PremiumBusinessStoreDependencies, input: Record<string, unknown>) {
+  const policy = dependencies.modelPolicyId;
+  if (typeof policy !== "string" || !policy.trim() || policy !== policy.trim() || policy.length > 200) throw new Error("A valid trusted host model policy is required before premium model work can be previewed or queued.");
+  if (input.modelId !== undefined && input.modelId !== policy) throw new Error("modelId must exactly match the host-configured model policy when provided.");
+  return policy;
+}
+
 async function replay(store: SuiteStore, auth: PremiumBusinessAuthorization, action: PremiumActionDefinition, key: string, requestHash: string): Promise<PremiumBusinessStoreResult | undefined> {
-  const receipt = (await store.listRecords(auth.userId, { moduleId: action.moduleId, recordType: receiptType, limit: 1_000_000 })).find((record) => record.data.actionId === action.id && record.data.idempotencyKey === key);
+  const receipt = await store.findCommandReceipt(auth.userId, { recordType: receiptType, moduleId: action.moduleId, actionId: action.id, idempotencyKey: key });
   if (!receipt) return undefined;
+  if (receipt.data.actorUserId !== auth.userId) throw new Error("The idempotency key is bound to another authenticated actor.");
   if (receipt.data.requestHash !== requestHash) throw new Error("The idempotency key was already used for different input.");
-  const records: SuiteRecord[] = []; for (const recordId of Array.isArray(receipt.data.resultRecordIds) ? receipt.data.resultRecordIds : []) { const record = await store.getRecord(auth.userId, String(recordId)); if (record) records.push(record); }
+  const records: SuiteRecord[] = []; for (const recordId of Array.isArray(receipt.data.resultRecordIds) ? receipt.data.resultRecordIds : []) { const record = await store.getRecord(auth.userId, String(recordId)); if (record && canRead(auth, record)) records.push(record); }
   const aiAction = typeof receipt.data.aiActionId === "string" ? await store.getAiAction(auth.userId, receipt.data.aiActionId) : undefined;
   return { kind: aiAction ? "ai-action" : "command", action, records, aiAction, preview: receipt.data.previewDigest ? { replayed: true, previewDigest: receipt.data.previewDigest } : undefined, audit: { ...(receipt.data.audit as Record<string, unknown>), receiptId: receipt.id, replayed: true } };
 }
 async function persistReceipt(context: DurableContext, key: string, requestHash: string, result: PremiumBusinessStoreResult) {
   const receiptAudit = { ...result.audit, requestHash, idempotencyKey: key, replayed: false };
   const receiptHash = digest(receiptAudit);
-  const receipt = await create(context.store, context.auth, { moduleId: context.action.moduleId, recordType: receiptType, title: `${context.action.id} · ${key.slice(0, 48)}`, state: context.dryRun ? "previewed" : "recorded", data: { actionId: context.action.id, idempotencyKey: key, requestHash, resultRecordIds: result.records.map((record) => record.id), aiActionId: result.aiAction?.id, previewDigest: result.preview ? digest(result.preview) : undefined, audit: { ...receiptAudit, receiptHash }, immutable: true } });
+  const auditApproval = (receiptAudit as Record<string, unknown>).approval;
+  const approval = auditApproval && typeof auditApproval === "object" && !Array.isArray(auditApproval)
+    ? auditApproval as Record<string, unknown>
+    : undefined;
+  const receipt = await create(context.store, context.auth, { moduleId: context.action.moduleId, recordType: receiptType, title: `${context.action.id} · ${key.slice(0, 48)}`, state: context.dryRun ? "previewed" : "recorded", data: { actionId: context.action.id, actorUserId: context.auth.userId, approvalDecisionId: approval?.decisionId, idempotencyKey: key, requestHash, resultRecordIds: result.records.map((record) => record.id), aiActionId: result.aiAction?.id, previewDigest: result.preview ? digest(result.preview) : undefined, audit: { ...receiptAudit, receiptHash }, immutable: true } });
   result.audit = { ...receiptAudit, receiptHash, receiptId: receipt.id };
   return result;
 }
@@ -168,15 +306,16 @@ function makeResult(context: DurableContext, outcome: DurableOutcome): PremiumBu
   return { kind: outcome.aiAction ? "ai-action" : context.action.operation === "read" ? "read" : "command", action: context.action, records: outcome.records, preview: outcome.preview, privateOutput: outcome.privateOutput, aiAction: outcome.aiAction, audit };
 }
 
-async function queueAi(context: DurableContext, options: { title: string; goal: string; promptVersion: string; modelId: string; evidence: SuiteRecord[]; source: Record<string, unknown>; extra?: Record<string, unknown> }): Promise<DurableOutcome> {
+async function queueAi(context: DurableContext, options: { title: string; goal: string; promptVersion: string; evidence: SuiteRecord[]; source: Record<string, unknown>; extra?: Record<string, unknown> }): Promise<DurableOutcome> {
   const platformPrompt = premiumBusinessPromptPolicies[context.action.moduleId];
-  const boundary = { platformPromptId: platformPrompt.id, platformPromptVersion: platformPrompt.version, platformPromptDigest: premiumBusinessPromptDigest(context.action.moduleId), forbiddenAutonomy: platformPrompt.forbiddenAutonomy, promptVersion: options.promptVersion, requestedModelId: options.modelId, executedModelId: null, confidence: null, evidenceIds: options.evidence.map((record) => record.id), evidenceSnapshots: options.evidence.map((record) => ({ recordId: record.id, version: recordVersion(record), snapshotHash: digest(record) })), review: { status: "pending-model", required: true }, output: null, fabricatedOutputAllowed: false, automaticMutationAllowed: false, approvalRequired: true, resultContract: premiumBusinessAiResultContract, source: canonical(options.source), ...(options.extra ?? {}) };
+  const requestedModelId = trustedModelPolicyId(context.deps, context.input);
+  const boundary = { ...(options.extra ?? {}), platformPromptId: platformPrompt.id, platformPromptVersion: platformPrompt.version, platformPromptDigest: premiumBusinessPromptDigest(context.action.moduleId), forbiddenAutonomy: platformPrompt.forbiddenAutonomy, promptVersion: options.promptVersion, requestedModelId, executedModelId: null, confidence: null, evidenceIds: options.evidence.map((record) => record.id), evidenceSnapshots: options.evidence.map((record) => ({ recordId: record.id, version: recordVersion(record), snapshotHash: digest(record) })), review: { status: "pending-model", required: true }, output: null, fabricatedOutputAllowed: false, automaticMutationAllowed: false, approvalRequired: true, resultContract: premiumBusinessAiResultContract, source: canonical(options.source) };
   if (context.dryRun) return { records: [], preview: { wouldQueueModelRun: true, modelInvoked: false, ...boundary } };
   let audit = await create(context.store, context.auth, { moduleId: context.action.moduleId, recordType: aiAuditType, title: options.title, state: "queued", data: { actionId: context.action.id, ...boundary, requestedAt: context.now.toISOString(), requestedByUserId: context.auth.userId, immutableRequest: true } });
   const aiAction = await context.store.queueAiAction(context.auth.userId, { moduleId: context.action.moduleId, goal: options.goal, context: { actionId: context.action.id, aiAuditRecordId: audit.id, workspaceId: context.auth.workspaceId, ...boundary } });
   if (!aiAction) { audit = await update(context.store, context.auth, audit, { state: "queue-failed", data: { review: { status: "queue-failed", required: true } } }); throw new Error("The premium AI request could not be queued."); }
   audit = await update(context.store, context.auth, audit, { data: { aiActionId: aiAction.id } });
-  return { records: [audit], aiAction, preview: { aiAuditRecordId: audit.id, aiActionId: aiAction.id, output: null }, audit: { modelExecuted: false, promptVersion: options.promptVersion, requestedModelId: options.modelId, confidence: null, evidenceIds: boundary.evidenceIds, reviewStatus: "pending-model", fabricatedOutputAllowed: false } };
+  return { records: [audit], aiAction, preview: { aiAuditRecordId: audit.id, aiActionId: aiAction.id, output: null }, audit: { modelExecuted: false, promptVersion: options.promptVersion, requestedModelId, confidence: null, evidenceIds: boundary.evidenceIds, reviewStatus: "pending-model", fabricatedOutputAllowed: false } };
 }
 
 export async function executePremiumBusinessAction<M extends PremiumModuleId>(store: SuiteStore, auth: PremiumBusinessAuthorization, moduleId: M, actionId: PremiumActionIdFor<M>, input: Record<string, unknown>, dependencies: Partial<PremiumBusinessStoreDependencies> = {}): Promise<PremiumBusinessStoreResult> {
@@ -184,12 +323,18 @@ export async function executePremiumBusinessAction<M extends PremiumModuleId>(st
     if (workspace.id !== auth.workspaceId) throw new Error("The storage transaction belongs to another workspace.");
     const action = premiumBusinessAction(moduleId, actionId) as PremiumActionDefinition | undefined; if (!action) throw new Error(`Unknown premium action ${moduleId}.${String(actionId)}.`);
     await authorize(store, auth, action); validateInput(action, input);
-    const deps: PremiumBusinessStoreDependencies = { now: dependencies.now ?? (() => new Date()) }; const now = deps.now(); if (!Number.isFinite(now.getTime())) throw new Error("The premium engine clock is invalid.");
+    const deps: PremiumBusinessStoreDependencies = { now: dependencies.now ?? (() => new Date()), modelPolicyId: dependencies.modelPolicyId ?? "" }; const now = deps.now(); if (!Number.isFinite(now.getTime())) throw new Error("The premium engine clock is invalid.");
     const dryRun = input.dryRun === true; if (input.dryRun !== undefined && !action.supportsDryRun) throw new Error("This action does not support dry runs.");
-    const requestHash = digest({ moduleId, actionId, input }); let key: string | undefined;
+    const requiresModelPolicy = action.operation === "ai" || action.moduleId === "assistant" && action.id === "run-preview";
+    if (requiresModelPolicy) trustedModelPolicyId(deps, input);
+    const effectiveInput = requiresModelPolicy ? { ...input, modelId: deps.modelPolicyId } : input;
+    const requestHash = digest({ workspaceId: auth.workspaceId, actorUserId: auth.userId, moduleId, actionId, input: effectiveInput }); let key: string | undefined;
     if (action.operation !== "read") {
       key = text(input, "idempotencyKey", 200); const existing = await replay(store, auth, action, key, requestHash); if (existing) return existing;
-      if (action.requiresApproval && !dryRun) humanApproval(auth, input, now);
+      if (action.requiresApproval && !dryRun) {
+        const approved = humanApproval(auth, input, now);
+        await assertUnusedApprovalDecision(store, auth, approved.decisionId);
+      }
     }
     const context: DurableContext = { store, auth, action, input, now, dryRun, deps };
     const outcome = action.moduleId === "projects" ? await projects(context) : action.moduleId === "drive" ? await drive(context) : action.moduleId === "channels" ? await channels(context) : action.moduleId === "operations" ? await operations(context) : await assistant(context);
@@ -200,7 +345,7 @@ export async function executePremiumBusinessAction<M extends PremiumModuleId>(st
 async function projects(context: DurableContext): Promise<DurableOutcome> {
   const { store, auth, action, input, now, dryRun } = context;
   if (action.id === "project-create") {
-    const stableKey = text(input, "key", 40); const existing = await store.listRecords(auth.userId, { moduleId: "projects", recordType: "project", limit: 100_000 });
+    const stableKey = text(input, "key", 40); const existing = await boundedRecords(store, auth, "projects", "project");
     if (existing.some((record) => record.data.key === stableKey)) throw new Error("Project key already exists in this workspace.");
     return { records: [await create(store, auth, { moduleId: "projects", recordType: "project", title: text(input, "name", 160), state: "active", data: { key: stableKey, outcome: text(input, "outcome", 2_000) } })] };
   }
@@ -243,7 +388,7 @@ async function projects(context: DurableContext): Promise<DurableOutcome> {
   }
   if (action.id === "plan-propose" || action.id === "health-explain") {
     const project = await owned(store, auth, input.projectId, "projects", "project", "projectId"); const selected = await evidence(store, auth, input.evidenceIds, { include: project.id }); const goal = text(input, action.id === "plan-propose" ? "objective" : "question", 4_000);
-    return queueAi(context, { title: `${action.title}: ${project.title}`, goal, promptVersion: text(input, "promptVersion", 120), modelId: text(input, "modelId", 200), evidence: selected, source: { projectId: project.id, goal }, extra: { proposalOnly: true } });
+    return queueAi(context, { title: `${action.title}: ${project.title}`, goal, promptVersion: text(input, "promptVersion", 120), evidence: selected, source: { projectId: project.id, goal }, extra: { proposalOnly: true } });
   }
   throw new Error(`Projects action ${action.id} is not implemented.`);
 }
@@ -283,7 +428,7 @@ async function drive(context: DurableContext): Promise<DurableOutcome> {
   }
   if (action.id === "document-understand") {
     const file = await owned(store, auth, input.fileId, "drive", "file", "fileId"); if (file.state !== "available") throw new Error("Only an available file can be analyzed."); const selected = await evidence(store, auth, input.evidenceIds, { include: file.id }); const goal = text(input, "question", 4_000);
-    return queueAi(context, { title: `${action.title}: ${file.title}`, goal, promptVersion: text(input, "promptVersion", 120), modelId: text(input, "modelId", 200), evidence: selected, source: { fileId: file.id, checksum: file.data.checksum, question: goal }, extra: { objectKeySharedWithModel: false, citationRequired: true } });
+    return queueAi(context, { title: `${action.title}: ${file.title}`, goal, promptVersion: text(input, "promptVersion", 120), evidence: selected, source: { fileId: file.id, checksum: file.data.checksum, question: goal }, extra: { objectKeySharedWithModel: false, citationRequired: true } });
   }
   throw new Error(`Drive action ${action.id} is not implemented.`);
 }
@@ -296,7 +441,7 @@ async function durableMessagePlan(context: DurableContext) {
 async function channels(context: DurableContext): Promise<DurableOutcome> {
   const { store, auth, action, input, now, dryRun } = context;
   if (action.id === "stream-create") {
-    const stableKey = text(input, "key", 40); const existing = await store.listRecords(auth.userId, { moduleId: "channels", recordType: "stream", limit: 100_000 }); if (existing.some((record) => record.data.key === stableKey)) throw new Error("Stream key already exists in this workspace.");
+    const stableKey = text(input, "key", 40); const existing = await boundedRecords(store, auth, "channels", "stream"); if (existing.some((record) => record.data.key === stableKey)) throw new Error("Stream key already exists in this workspace.");
     return { records: [await create(store, auth, { moduleId: "channels", recordType: "stream", title: text(input, "name", 160), state: "active", data: { key: stableKey, purpose: text(input, "purpose", 2_000) } })] };
   }
   if (action.id === "topic-create") { const stream = await owned(store, auth, input.streamId, "channels", "stream", "streamId"); return { records: [await create(store, auth, { moduleId: "channels", recordType: "topic", title: text(input, "title", 240), state: "open", data: { streamId: stream.id, intent: text(input, "intent", 2_000), decision: null } })] }; }
@@ -315,11 +460,11 @@ async function channels(context: DurableContext): Promise<DurableOutcome> {
   }
   if (action.id === "topic-summarize") {
     const topic = await owned(store, auth, input.topicId, "channels", "topic", "topicId"); const selected = await evidence(store, auth, input.evidenceIds, { moduleId: "channels", recordType: "message" }); if (selected.some((record) => record.data.topicId !== topic.id)) throw new Error("Topic summaries may use only messages from the selected topic."); const goal = text(input, "question", 4_000);
-    return queueAi(context, { title: `${action.title}: ${topic.title}`, goal, promptVersion: text(input, "promptVersion", 120), modelId: text(input, "modelId", 200), evidence: selected, source: { topicId: topic.id, question: goal }, extra: { proposalOnly: true } });
+    return queueAi(context, { title: `${action.title}: ${topic.title}`, goal, promptVersion: text(input, "promptVersion", 120), evidence: selected, source: { topicId: topic.id, question: goal }, extra: { proposalOnly: true } });
   }
   if (action.id === "digest-draft") {
     const stream = await owned(store, auth, input.streamId, "channels", "stream", "streamId"); const selected = await evidence(store, auth, input.evidenceIds, { moduleId: "channels", recordType: "topic" }); if (selected.some((record) => record.data.streamId !== stream.id)) throw new Error("Stream digests may use only topics from the selected stream."); const goal = text(input, "instruction", 4_000);
-    return queueAi(context, { title: `${action.title}: ${stream.title}`, goal, promptVersion: text(input, "promptVersion", 120), modelId: text(input, "modelId", 200), evidence: selected, source: { streamId: stream.id, instruction: goal }, extra: { proposalOnly: true, automaticSendAllowed: false } });
+    return queueAi(context, { title: `${action.title}: ${stream.title}`, goal, promptVersion: text(input, "promptVersion", 120), evidence: selected, source: { streamId: stream.id, instruction: goal }, extra: { proposalOnly: true, automaticSendAllowed: false } });
   }
   throw new Error(`Channels action ${action.id} is not implemented.`);
 }
@@ -335,7 +480,7 @@ async function operations(context: DurableContext): Promise<DurableOutcome> {
   const { store, auth, action, input, now, dryRun } = context;
   if (action.id === "party-create") return { records: [await create(store, auth, { moduleId: "operations", recordType: "party", title: text(input, "name", 240), state: "active", data: { kind: text(input, "kind", 20), currency: text(input, "currency", 3) } })] };
   if (action.id === "item-create") {
-    const sku = text(input, "sku", 80); const existing = await store.listRecords(auth.userId, { moduleId: "operations", recordType: "item", limit: 100_000 }); if (existing.some((record) => record.data.sku === sku)) throw new Error("SKU already exists in this workspace.");
+    const sku = text(input, "sku", 80); const existing = await boundedRecords(store, auth, "operations", "item"); if (existing.some((record) => record.data.sku === sku)) throw new Error("SKU already exists in this workspace.");
     return { records: [await create(store, auth, { moduleId: "operations", recordType: "item", title: text(input, "name", 240), state: "active", data: { sku, currency: text(input, "currency", 3), unitPriceMinor: integer(input, "unitPriceMinor", 0, 1_000_000_000_000) } })] };
   }
   if (action.id === "order-create") {
@@ -366,20 +511,15 @@ async function operations(context: DurableContext): Promise<DurableOutcome> {
   }
   if (action.id === "variance-explain") {
     const selected = await evidence(store, auth, input.evidenceIds, { moduleId: "operations", recordType: ["order", "invoice", "payment", "journal"] }); const goal = text(input, "question", 4_000);
-    return queueAi(context, { title: action.title, goal, promptVersion: text(input, "promptVersion", 120), modelId: text(input, "modelId", 200), evidence: selected, source: { question: goal }, extra: { mayPostAccountingFacts: false } });
+    return queueAi(context, { title: action.title, goal, promptVersion: text(input, "promptVersion", 120), evidence: selected, source: { question: goal }, extra: { mayPostAccountingFacts: false } });
   }
   throw new Error(`Operations action ${action.id} is not implemented.`);
 }
 
 async function durableGroundedRun(context: DurableContext) {
   const prompt = await owned(context.store, context.auth, context.input.promptVersionId, "assistant", "prompt-version", "promptVersionId"); const collection = await owned(context.store, context.auth, context.input.collectionId, "assistant", "collection", "collectionId"); const selected = await evidence(context.store, context.auth, context.input.evidenceIds);
-  const attachments = (await context.store.listRecords(context.auth.userId, { moduleId: "assistant", recordType: "source-attachment", limit: 100_000 })).filter((record) => record.data.collectionId === collection.id);
-  const evidenceHashes: Array<{ recordId: string; recordSnapshotHash: string; contentHash: unknown }> = [];
-  for (const record of selected) {
-    const snapshotHash = digest(record); const attachment = attachments.find((candidate) => candidate.data.recordId === record.id && candidate.data.sourceVersion === recordVersion(record) && candidate.data.sourceSnapshotHash === snapshotHash);
-    if (!attachment) throw new Error("Every run evidence record must be checksum-attached at its current exact version."); evidenceHashes.push({ recordId: record.id, recordSnapshotHash: snapshotHash, contentHash: attachment.data.contentHash });
-  }
-  const plan = { promptVersionId: prompt.id, promptContentHash: prompt.data.contentHash, collectionId: collection.id, evidenceIds: selected.map((record) => record.id), evidenceHashes, modelId: text(context.input, "modelId", 200), goal: text(context.input, "goal", 4_000), reviewRequired: true }; return { prompt, collection, selected, plan, previewHash: digest(plan) };
+  const assistantEvidenceBindings = await bindAssistantEvidence(context.store, context.auth, selected, collection.id);
+  const plan = { promptVersionId: prompt.id, promptContentHash: prompt.data.contentHash, collectionId: collection.id, evidenceIds: selected.map((record) => record.id), assistantEvidenceBindings, requestedModelId: trustedModelPolicyId(context.deps, context.input), goal: text(context.input, "goal", 4_000), reviewRequired: true }; return { prompt, collection, selected, plan, previewHash: digest(plan) };
 }
 
 function reviewedResult(input: Record<string, unknown>, allowedEvidenceIds: Set<string>, reviewerId: string) {
@@ -415,7 +555,7 @@ async function assistant(context: DurableContext): Promise<DurableOutcome> {
   if (action.id === "collection-create") return { records: [await create(store, auth, { moduleId: "assistant", recordType: "collection", title: text(input, "name", 160), state: "active", data: { purpose: text(input, "purpose", 2_000) } })] };
   if (action.id === "source-attach") {
     const collection = await owned(store, auth, input.collectionId, "assistant", "collection", "collectionId"); const source = await owned(store, auth, input.recordId, undefined, undefined, "recordId"); if (source.id === collection.id) throw new Error("A collection cannot cite itself."); const contentHash = text(input, "contentHash", 64); const sourceSnapshotHash = digest(source);
-    const existing = (await store.listRecords(auth.userId, { moduleId: "assistant", recordType: "source-attachment", limit: 100_000 })).find((record) => record.data.collectionId === collection.id && record.data.recordId === source.id && record.data.contentHash === contentHash && record.data.sourceVersion === recordVersion(source) && record.data.sourceSnapshotHash === sourceSnapshotHash); if (existing) return { records: [existing], preview: { alreadyAttached: true } };
+    const existing = (await boundedRecords(store, auth, "assistant", "source-attachment")).find((record) => record.data.collectionId === collection.id && record.data.recordId === source.id && record.data.contentHash === contentHash && record.data.sourceVersion === recordVersion(source) && record.data.sourceSnapshotHash === sourceSnapshotHash); if (existing) return { records: [existing], preview: { alreadyAttached: true } };
     return { records: [await create(store, auth, { moduleId: "assistant", recordType: "source-attachment", title: text(input, "citationLabel", 240), state: "active", data: { collectionId: collection.id, recordId: source.id, sourceModuleId: source.moduleId, sourceRecordType: source.recordType, sourceVersion: recordVersion(source), sourceSnapshotHash, contentHash, rawPayloadCopied: false } })] };
   }
   if (action.id === "prompt-version-create") {
@@ -425,7 +565,7 @@ async function assistant(context: DurableContext): Promise<DurableOutcome> {
   if (action.id === "run-preview") { const run = await durableGroundedRun(context); return { records: [], preview: { ...run.plan, previewHash: run.previewHash, modelInvoked: false, output: null } }; }
   if (action.id === "run-execute") {
     const run = await durableGroundedRun(context); if (text(input, "previewHash", 64) !== run.previewHash) throw new Error("The model run preview hash is stale or does not match.");
-    return queueAi(context, { title: `${action.title}: ${run.prompt.title}`, goal: String(run.plan.goal), promptVersion: String(run.prompt.data.contentHash), modelId: String(run.plan.modelId), evidence: run.selected, source: { promptVersionId: run.prompt.id, promptContentHash: run.prompt.data.contentHash, collectionId: run.collection.id, goal: run.plan.goal }, extra: { previewHash: run.previewHash, outputContract: run.prompt.data.outputContract } });
+    return queueAi(context, { title: `${action.title}: ${run.prompt.title}`, goal: String(run.plan.goal), promptVersion: String(run.prompt.data.contentHash), evidence: run.selected, source: { promptVersionId: run.prompt.id, promptContentHash: run.prompt.data.contentHash, collectionId: run.collection.id, goal: run.plan.goal }, extra: { previewHash: run.previewHash, outputContract: run.prompt.data.outputContract, assistantEvidenceBindings: run.plan.assistantEvidenceBindings } });
   }
   if (action.id === "result-record") {
     const audit = await owned(store, auth, input.runId, "assistant", aiAuditType, "runId"); if (audit.state !== "pending-human-review") throw new Error("Only a completed premium run pending human review can be recorded."); const aiAction = await store.getAiAction(auth.userId, String(audit.data.aiActionId)); if (!aiAction || aiAction.status !== "completed") throw new Error("The exact completed model action was not found.");
@@ -444,7 +584,8 @@ async function assistant(context: DurableContext): Promise<DurableOutcome> {
   }
   if (action.id === "agent-execute") {
     const agent = await owned(store, auth, input.agentId, "assistant", "agent", "agentId"); if (agent.state !== "approved") throw new Error("Only an approved agent version can be executed."); const prompt = await owned(store, auth, agent.data.promptVersionId, "assistant", "prompt-version", "promptVersionId"); if (prompt.data.contentHash !== agent.data.promptContentHash) throw new Error("The agent prompt boundary is stale."); const selected = await evidence(store, auth, input.evidenceIds); const goal = text(input, "goal", 4_000);
-    return queueAi(context, { title: `${action.title}: ${agent.title}`, goal, promptVersion: String(prompt.data.contentHash), modelId: text(input, "modelId", 200), evidence: selected, source: { agentId: agent.id, agentContentHash: agent.data.contentHash, promptVersionId: prompt.id, goal }, extra: { allowedActions: agent.data.allowedActions, maximumSteps: agent.data.maximumSteps, automaticMutationAllowed: false, proposalsRequireSeparateApproval: true } });
+    const assistantEvidenceBindings = await bindAssistantEvidence(store, auth, selected);
+    return queueAi(context, { title: `${action.title}: ${agent.title}`, goal, promptVersion: String(prompt.data.contentHash), evidence: selected, source: { agentId: agent.id, agentContentHash: agent.data.contentHash, promptVersionId: prompt.id, goal }, extra: { allowedActions: agent.data.allowedActions, maximumSteps: agent.data.maximumSteps, automaticMutationAllowed: false, proposalsRequireSeparateApproval: true, assistantEvidenceBindings } });
   }
   throw new Error(`Assistant action ${action.id} is not implemented.`);
 }

@@ -7,6 +7,7 @@ google_cloud_dir="$(cd -- "$provenance_dir/.." && pwd -P)"
 repo_root="$(cd -- "$google_cloud_dir/../.." && pwd -P)"
 verifier="$provenance_dir/verify-control-plane-image.sh"
 rollout="$google_cloud_dir/rollout-control-plane.sh"
+domain_identity_preflight="$google_cloud_dir/database/preflight-migration-018-domain-identities.sql"
 managed_images_workflow="$repo_root/.github/workflows/managed-images.yml"
 
 fail() {
@@ -34,6 +35,7 @@ assert_file_contains() {
 
 bash -n "$verifier"
 bash -n "$rollout"
+[[ -f "$domain_identity_preflight" && ! -L "$domain_identity_preflight" ]] || fail "migration 018 domain-identity preflight is unavailable"
 
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT
@@ -150,6 +152,7 @@ rollout_security="$rollout_root/installed-security"
 rollout_systemd="$rollout_root/systemd"
 mkdir -p "$rollout_root/provenance" "$rollout_root/readiness" "$rollout_root/database" "$rollout_root/worker" "$rollout_compose" "$rollout_proofs"
 cp "$rollout" "$rollout_root/rollout-control-plane.sh"
+cp "$domain_identity_preflight" "$rollout_root/database/preflight-migration-018-domain-identities.sql"
 printf '%s\n' '#!/usr/bin/env bash
 exit 0' >"$rollout_root/worker/metadata-firewall.sh"
 printf '%s\n' '[Unit]
@@ -165,6 +168,7 @@ printf "%s\n" "{\"ok\":true,\"hostMetadata\":true,\"bridgeIpv4Blocked\":true,\"b
 printf 'version: "3.9"\n' >"$rollout_compose/docker-compose.yml"
 printf 'CONTROL_PLANE_IMAGE=%s\nPROVISIONING_MODE=live\n' "$image" >"$rollout_compose/runtime.env"
 printf 'MANAGED_RUNTIME_PASSWORD=fixture\n' >"$rollout_compose/database-role-passwords.env"
+printf 'POSTGRES_PASSWORD=%064d\n' 0 >"$rollout_compose/postgres.env"
 
 printf '%s\n' '#!/usr/bin/env bash
 printf "verify %s\\n" "$*" >>"$MOCK_CALL_LOG"
@@ -214,7 +218,27 @@ printf '%s\n' '#!/usr/bin/env bash
 printf "database-roles\\n" >>"$MOCK_CALL_LOG"' >"$rollout_root/database/configure-role-logins.sh"
 
 printf '%s\n' '#!/usr/bin/env bash
-printf "compose %s\\n" "$*" >>"$MOCK_CALL_LOG"' >"$mock_dir/docker-compose"
+printf "compose %s\\n" "$*" >>"$MOCK_CALL_LOG"
+if [[ "$*" == *"exec -T database sh -ceu"* ]]; then
+  payload="$(cat)"
+  password="$(printf "%s\\n" "$payload" | sed -n "1p")"
+  [[ "$password" =~ ^[a-f0-9]{64}$ ]] || exit 10
+  if [[ "$payload" == *"migration-018-domain-identity-preflight-v1"* ]]; then
+    printf "identity-preflight\\n" >>"$MOCK_CALL_LOG"
+    if [[ "${MOCK_PREFLIGHT_MALFORMED:-0}" == "1" ]]; then
+      printf "unsafe-customer-value|1\\n"
+      exit 0
+    fi
+    sql="$(printf "%s\\n" "$payload" | sed "1d")"
+    while IFS= read -r quoted_name; do
+      name="${quoted_name#?}"
+      name="${name%?}"
+      count=0
+      if [[ "$name" == "${MOCK_DUPLICATE_INVARIANT:-}" ]]; then count=1; fi
+      printf "%s|%s\\n" "$name" "$count"
+    done < <(printf "%s\\n" "$sql" | sed -n "s/^SELECT \\([^ ]*\\) AS invariant_name,.*/\\1/p")
+  fi
+fi' >"$mock_dir/docker-compose"
 printf '%s\n' '#!/usr/bin/env bash
 printf "docker %s\\n" "$*" >>"$MOCK_CALL_LOG"' >"$mock_dir/docker"
 printf '%s\n' '#!/usr/bin/env bash
@@ -239,8 +263,55 @@ firewall_enable_line="$(grep -n '^systemctl enable --now managed-oss-metadata-fi
 docker_pull_line="$(grep -n '^docker pull ' "$rollout_log" | cut -d: -f1)"
 metadata_proof_line="$(grep -n '^metadata-proof ' "$rollout_log" | cut -d: -f1)"
 pull_line="$(grep -n '^compose --profile operations pull$' "$rollout_log" | cut -d: -f1)"
-[[ -n "$firewall_enable_line" && -n "$verify_line" && -n "$docker_pull_line" && -n "$metadata_proof_line" && -n "$pull_line" ]] || fail "rollout omitted a metadata or provenance gate"
+preflight_line="$(grep -n '^identity-preflight$' "$rollout_log" | cut -d: -f1)"
+migration_line="$(grep -n '^compose --profile operations run --rm migrate$' "$rollout_log" | cut -d: -f1)"
+[[ -n "$firewall_enable_line" && -n "$verify_line" && -n "$docker_pull_line" && -n "$metadata_proof_line" && -n "$pull_line" && -n "$preflight_line" && -n "$migration_line" ]] || fail "rollout omitted a metadata, provenance, or migration duplicate gate"
 (( firewall_enable_line < verify_line && verify_line < docker_pull_line && docker_pull_line < metadata_proof_line && metadata_proof_line < pull_line )) || fail "rollout did not install and prove metadata isolation before Compose"
+(( pull_line < preflight_line && preflight_line < migration_line )) || fail "rollout did not complete the migration 018 duplicate preflight immediately before migrations"
+
+duplicate_rollout_log="$test_root/duplicate-rollout.log"
+: >"$duplicate_rollout_log"
+set +e
+duplicate_output="$(
+  MOCK_DUPLICATE_INVARIANT=suite_core_webhook_delivery_unique \
+  MOCK_CALL_LOG="$duplicate_rollout_log" COMPOSE_BIN="$mock_dir/docker-compose" DOCKER_BIN="$mock_dir/docker" SYSTEMCTL_BIN="$mock_dir/systemctl" \
+    "$rollout_root/rollout-control-plane.sh" \
+    --source-commit "$source_commit" \
+    --compose-dir "$rollout_compose" \
+    --proof-dir "$test_root/duplicate-proofs" \
+    --ready-marker "$rollout_root/duplicate-ready" \
+    --security-dir "$rollout_security" \
+    --systemd-dir "$rollout_systemd" 2>&1
+)"
+duplicate_status=$?
+set -e
+(( duplicate_status != 0 )) || fail "migration 018 duplicate preflight unexpectedly permitted rollout"
+[[ "$duplicate_output" == *"suite_core_webhook_delivery_unique|1"* && "$duplicate_output" == *"found duplicate groups"* ]] || fail "duplicate preflight did not return the privacy-safe invariant count and refusal"
+[[ "$duplicate_output" != *"0000000000000000000000000000000000000000000000000000000000000000"* ]] || fail "duplicate preflight exposed the database administrator password"
+grep -E '^compose --profile operations run --rm migrate$' "$duplicate_rollout_log" >/dev/null && fail "migration 018 duplicate preflight failure reached migrations"
+[[ ! -e "$rollout_root/duplicate-ready" ]] || fail "migration 018 duplicate preflight failure reached readiness"
+
+malformed_rollout_log="$test_root/malformed-preflight-rollout.log"
+: >"$malformed_rollout_log"
+set +e
+malformed_output="$(
+  MOCK_PREFLIGHT_MALFORMED=1 \
+  MOCK_CALL_LOG="$malformed_rollout_log" COMPOSE_BIN="$mock_dir/docker-compose" DOCKER_BIN="$mock_dir/docker" SYSTEMCTL_BIN="$mock_dir/systemctl" \
+    "$rollout_root/rollout-control-plane.sh" \
+    --source-commit "$source_commit" \
+    --compose-dir "$rollout_compose" \
+    --proof-dir "$test_root/malformed-preflight-proofs" \
+    --ready-marker "$rollout_root/malformed-preflight-ready" \
+    --security-dir "$rollout_security" \
+    --systemd-dir "$rollout_systemd" 2>&1
+)"
+malformed_status=$?
+set -e
+(( malformed_status != 0 )) || fail "malformed migration 018 duplicate report unexpectedly permitted rollout"
+[[ "$malformed_output" == *"invalid privacy-safe report"* ]] || fail "malformed migration 018 duplicate report did not fail closed"
+[[ "$malformed_output" != *"unsafe-customer-value"* ]] || fail "malformed migration 018 duplicate report was printed before validation"
+grep -E '^compose --profile operations run --rm migrate$' "$malformed_rollout_log" >/dev/null && fail "malformed migration 018 duplicate report reached migrations"
+[[ ! -e "$rollout_root/malformed-preflight-ready" ]] || fail "malformed migration 018 duplicate report reached readiness"
 
 failed_rollout_log="$test_root/failed-rollout.log"
 : >"$failed_rollout_log"

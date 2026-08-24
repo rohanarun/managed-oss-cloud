@@ -5,13 +5,13 @@ import { createApp } from "../src/server/app";
 import { MemoryRepository } from "../src/server/repository";
 import { MemorySuiteStore } from "../src/server/suite-store";
 import { suiteAiReadScopes, suiteModules, suitePlanAllows, suiteToolName } from "../src/shared/suite";
-import { suiteActionsByModule } from "../src/shared/suite-actions";
+import { suiteActions, suiteActionsByModule } from "../src/shared/suite-actions";
 import { executeSuiteAction } from "../src/server/suite-engine";
 import { executeFirstPartyGrowthAction } from "../src/server/first-party-growth-engine";
 import { suiteStorageAccounting } from "../src/shared/suite-quotas";
 
 function idempotency(label: string) { return `${label}.idempotency.0001`; }
-function approval(userId: string, label: string) { return { approved: true, approvedBy: userId, decisionId: `${label}.approval.0001`, reason: `Reviewed the exact ${label} version and public effect.` }; }
+function approval(userId: string, label: string) { return { approved: true, approvedBy: userId, approvedAt: new Date().toISOString(), decisionId: `${label}.approval.0001`, reason: `Reviewed the exact ${label} version and public effect.` }; }
 function recordOf(response: request.Response, recordType: string) { return response.body.records?.find((record: { recordType: string }) => record.recordType === recordType); }
 function sha(value: string) { return createHash("sha256").update(value).digest("hex"); }
 
@@ -24,8 +24,14 @@ describe("MIT-native shared suite", () => {
       "Public scheduling and iCalendar standards", "Public JSON Schema and accessibility standards", "OpenFeature and public experimentation standards",
       "Public electronic-signature workflow standards",
       "Public permission-based email marketing standards",
+      "Public relational-data and spreadsheet patterns", "Public meeting transcript and action-ledger patterns", "Public business-intelligence and measurement patterns",
+      "Public learning-management and credential patterns", "Public forum and community-management patterns",
+      "Public event, ticketing, and access-control patterns", "Public HRIS and employment-record patterns", "Public usage-metering and billing-ledger patterns",
+      "Public risk, control, and audit-evidence patterns", "Public livestream, chat, and media-consent patterns",
       "Plane", "Nextcloud", "Zulip", "ERPNext", "LibreChat",
     ]);
+    expect(suiteModules).toHaveLength(37);
+    expect(suiteActions.length).toBe([...suiteActionsByModule.values()].reduce((sum, actions) => sum + actions.length, 0));
     expect(new Set(suiteModules.map((module) => module.id)).size).toBe(suiteModules.length);
     expect(suiteModules.every((module) => module.recordTypes.length > 0 && module.aiCapabilities.length > 0)).toBe(true);
     expect(suiteToolName("brand-pages", "create")).toBe("brand_pages_create");
@@ -49,8 +55,20 @@ describe("MIT-native shared suite", () => {
     expect(suitePlanAllows("scale", projects)).toBe(true);
     expect(suitePlanAllows("scale", operations)).toBe(false);
     expect(suitePlanAllows("fleet", operations)).toBe(true);
+    expect(suitePlanAllows("starter", suiteModules.find((module) => module.id === "tables")!)).toBe(true);
+    expect(suitePlanAllows("starter", suiteModules.find((module) => module.id === "meetings")!)).toBe(false);
+    expect(suitePlanAllows("scale", suiteModules.find((module) => module.id === "events")!)).toBe(true);
+    expect(suitePlanAllows("scale", suiteModules.find((module) => module.id === "metering")!)).toBe(false);
+    expect(suitePlanAllows("fleet", suiteModules.find((module) => module.id === "metering")!)).toBe(true);
     expect(suiteAiReadScopes("inbox")).toEqual(["inbox", "crm", "knowledge"]);
     expect(suiteAiReadScopes("assistant")).toEqual(["assistant"]);
+    expect(suiteAiReadScopes("tables")).toEqual(["tables"]);
+    expect(suiteAiReadScopes("tables", { explicitSelection: true })).toEqual(suiteModules.map((module) => module.id));
+    expect(suiteAiReadScopes("projects", { explicitSelection: true })).toEqual(suiteModules.map((module) => module.id));
+    expect(suiteAiReadScopes("drive", { explicitSelection: true })).toEqual(suiteModules.map((module) => module.id));
+    expect(suiteAiReadScopes("channels", { explicitSelection: true })).toEqual(suiteModules.map((module) => module.id));
+    expect(suiteAiReadScopes("operations", { explicitSelection: true })).toEqual(suiteModules.map((module) => module.id));
+    expect(suiteAiReadScopes("assistant", { explicitSelection: true })).toEqual(["assistant"]);
   });
 
   it("rechecks the paid plan for every premium action, including after downgrade", async () => {
@@ -130,6 +148,10 @@ describe("MIT-native shared suite", () => {
     const account = await agent.post("/api/suite/modules/crm/actions/account-upsert").send({ input: { externalKey: "customer-trial", name: "Customer", domain: "customer.example", idempotencyKey: idempotency("session-account") } });
     expect(account.status).toBe(200);
     const accountId = recordOf(account, "account").id;
+    const wrongContact = await agent.post("/api/suite/modules/inbox/actions/thread-open").send({ input: { contactId: accountId, channel: "email", subject: "Wrong record type", message: "Must not persist", idempotencyKey: idempotency("wrong-contact-thread") } });
+    expect(wrongContact.status).toBe(409);
+    expect(wrongContact.body.error).toBe("contact not found.");
+    expect((await agent.get("/api/suite/records?moduleId=inbox")).body.records).toEqual([]);
     const contact = await agent.post("/api/suite/modules/crm/actions/contact-link").send({ input: { accountId, name: "Customer contact", email: "customer@example.com", consentBasis: "Existing customer", idempotencyKey: idempotency("session-contact") } });
     expect(contact.status).toBe(200);
     const conversation = await agent.post("/api/suite/modules/inbox/actions/thread-open").send({ input: { contactId: recordOf(contact, "contact").id, channel: "email", subject: "Needs help", message: "Please help", idempotencyKey: idempotency("session-thread") } });

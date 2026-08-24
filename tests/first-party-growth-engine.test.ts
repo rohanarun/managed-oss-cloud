@@ -22,8 +22,8 @@ const laterDeps = { ...deps, now: () => laterNow };
 
 function key(label: string) { return `${label}.idempotency.0001`; }
 function hashText(value: string) { return createHash("sha256").update(value).digest("hex"); }
-function approval(auth: FirstPartyGrowthAuthorization, label: string) {
-  return { approved: true as const, approvedBy: auth.userId, decisionId: `${label}.approval.0001`, reason: `Reviewed ${label} evidence and exact content.` };
+function approval(auth: FirstPartyGrowthAuthorization, label: string, approvedAt = firstNow) {
+  return { approved: true as const, approvedBy: auth.userId, approvedAt: approvedAt.toISOString(), decisionId: `${label}.approval.0001`, reason: `Reviewed ${label} evidence and exact content.` };
 }
 
 async function actor(store: MemorySuiteStore, enabled = modules) {
@@ -117,15 +117,15 @@ describe("first-party AI-native growth products", () => {
     const preview = await run(store, auth, "giveaways", "draw-snapshot-freeze", { contestId: contest.id, expectedContestVersion: 2, dryRun: true, idempotencyKey: key("freeze-preview") }, laterDeps);
     expect(preview.audit).toMatchObject({ dryRun: true, candidateCount: 2, plannedState: "draw-frozen", autonomousExternalSideEffect: false });
     expect(await store.listRecords(auth.userId, { moduleId: "giveaways", recordType: "draw-snapshot", limit: 10 })).toHaveLength(0);
-    const frozen = await run(store, auth, "giveaways", "draw-snapshot-freeze", { contestId: contest.id, expectedContestVersion: 2, dryRun: false, approval: approval(auth, "freeze"), idempotencyKey: key("freeze-live") }, laterDeps);
+    const frozen = await run(store, auth, "giveaways", "draw-snapshot-freeze", { contestId: contest.id, expectedContestVersion: 2, dryRun: false, approval: approval(auth, "freeze", laterNow), idempotencyKey: key("freeze-live") }, laterDeps);
     const snapshot = frozen.records.find((record) => record.recordType === "draw-snapshot")!;
-    const drawInput = { snapshotId: snapshot.id, entropyReveal, publicEntropy: "public-beacon-round-12345", publicEntropySource: "https://example.org/randomness/12345", beaconObservedAt: laterNow.toISOString(), dryRun: false, approval: approval(auth, "winner"), idempotencyKey: key("winner") };
+    const drawInput = { snapshotId: snapshot.id, entropyReveal, publicEntropy: "public-beacon-round-12345", publicEntropySource: "https://example.org/randomness/12345", beaconObservedAt: laterNow.toISOString(), dryRun: false, approval: approval(auth, "winner", laterNow), idempotencyKey: key("winner") };
     const drawn = await run(store, auth, "giveaways", "winner-draw-reveal", drawInput, laterDeps);
     expect(drawn.audit).toMatchObject({ algorithm: "sha256-commit-public-entropy-rejection-v1", reproducible: true, candidateCount: 2, publicSurfaceChanged: true, providerCallStarted: false, autonomousExternalSideEffect: false });
     expect(String(drawn.audit.winnerToken)).toHaveLength(24);
     const replayed = await run(store, auth, "giveaways", "winner-draw-reveal", drawInput, laterDeps);
     expect(replayed.audit.winnerEntryId).toBe(drawn.audit.winnerEntryId);
-    await expect(run(store, auth, "giveaways", "winner-draw-reveal", { ...drawInput, idempotencyKey: key("winner-again"), approval: approval(auth, "winner-again") }, laterDeps)).rejects.toThrow(/undrawn state/);
+    await expect(run(store, auth, "giveaways", "winner-draw-reveal", { ...drawInput, idempotencyKey: key("winner-again"), approval: approval(auth, "winner-again", laterNow) }, laterDeps)).rejects.toThrow(/undrawn state/);
   });
 
   it("keeps testimonial evidence private until approved versions publish and revokes every affected surface", async () => {

@@ -46,6 +46,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install trusted database hashing extension
+        run: psql "$TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
@@ -55,3 +57,38 @@ jobs:
       - run: deploy/google-cloud/readiness/tests/verify-readiness-contracts.sh
       - run: deploy/google-cloud/provenance/tests/verify-provenance-contracts.sh
       - run: deploy/google-cloud/tests/verify-caddy-admin-isolation.sh
+
+  shared-database-acceptance:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: managed_oss_acceptance
+          POSTGRES_USER: managed_oss_acceptance_admin
+          POSTGRES_PASSWORD: managed_oss_acceptance_admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U managed_oss_acceptance_admin -d managed_oss_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_ACCEPTANCE_REQUIRED: "true"
+      POSTGRES_ACCEPTANCE_SETUP_URL: postgresql://managed_oss_acceptance_admin:managed_oss_acceptance_admin@127.0.0.1:5432/managed_oss_acceptance
+      POSTGRES_ACCEPTANCE_CONTROL_URL: postgresql://managed_oss_acceptance_control:managed_oss_acceptance_control@127.0.0.1:5432/managed_oss_acceptance
+      POSTGRES_ACCEPTANCE_RUNTIME_URL: postgresql://managed_oss_acceptance_runtime:managed_oss_acceptance_runtime@127.0.0.1:5432/managed_oss_acceptance
+      DATABASE_MIGRATION_MODE: manual
+      DATABASE_SSL: "false"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install trusted database hashing extension
+        run: psql "$POSTGRES_ACCEPTANCE_SETUP_URL" -X -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+      - run: npm run build
+      - run: npm run test:postgres-acceptance

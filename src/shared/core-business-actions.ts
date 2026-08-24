@@ -44,10 +44,11 @@ const url = { type: "string", format: "uri", pattern: "^https://" };
 const idempotencyKey = { type: "string", pattern: "^[A-Za-z0-9._:-]{16,200}$" };
 const approval = {
   type: "object",
-  required: ["approved", "approvedBy", "decisionId", "reason"],
+  required: ["approved", "approvedBy", "approvedAt", "decisionId", "reason"],
   properties: {
     approved: { const: true },
     approvedBy: uuid,
+    approvedAt: dateTime,
     decisionId: { type: "string", pattern: "^[A-Za-z0-9._:-]{16,200}$" },
     reason: text(1_000),
   },

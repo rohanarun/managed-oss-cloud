@@ -72,7 +72,7 @@ describe("first-party growth rewrite integration", () => {
 
   it("routes model jobs only through the pinned growth result and prompt contracts", () => {
     const worker = readFileSync("src/server/ai-worker.ts", "utf8");
-    expect(worker).toContain('version === "first-party-growth-ai-result.v1"');
+    expect(worker).toContain('contractVersion === "first-party-growth-ai-result.v1"');
     expect(worker).toContain("firstPartyGrowthPromptDigest(growthAction.moduleId)");
     expect(worker).toContain("validateFirstPartyGrowthAiCompletion");
     expect(worker).toContain('model: config.AI_MODEL');

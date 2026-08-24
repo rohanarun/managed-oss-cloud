@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { coreBusinessActions, coreBusinessActionsByModule, type CoreBusinessModuleId } from "../src/shared/core-business-actions.js";
-import { executeCoreBusinessAction, executeCoreBusinessActionWithStorage, exportCoreBusinessSnapshot, importCoreBusinessSnapshotWithStorage, recordCoreBusinessAiCompletion, suiteStoreCoreBusinessStorage, validateCoreBusinessSnapshot, type CoreBusinessAuthorization, type CoreBusinessEngineDependencies, type CoreBusinessStorageAdapter } from "../src/server/core-business-engine.js";
+import { coreBusinessBoundedScanLimit, executeCoreBusinessAction, executeCoreBusinessActionWithStorage, exportCoreBusinessSnapshot, importCoreBusinessSnapshotWithStorage, recordCoreBusinessAiCompletion, suiteStoreCoreBusinessStorage, validateCoreBusinessSnapshot, type CoreBusinessAuthorization, type CoreBusinessEngineDependencies, type CoreBusinessStorageAdapter } from "../src/server/core-business-engine.js";
 import { MemorySuiteStore } from "../src/server/suite-store.js";
 
 const modules: CoreBusinessModuleId[] = ["automate", "publish", "inbox", "crm", "tasks", "feedback", "knowledge", "links"];
@@ -44,7 +44,7 @@ describe("clean-room AI-native core business suite", () => {
         }
         if (action.externalEffect || action.destructive) {
           expect(action.inputSchema.required).toContain("dryRun");
-          expect(action.inputSchema.properties.approval).toMatchObject({ type: "object", additionalProperties: false });
+          expect(action.inputSchema.properties.approval).toMatchObject({ type: "object", required: expect.arrayContaining(["approvedAt", "decisionId"]), additionalProperties: false });
         }
         if (action.operation === "ai") expect(action).toMatchObject({ promptId: expect.any(String), promptVersion: "2026-08-24.1", requiredScope: "ai" });
       }
@@ -59,7 +59,7 @@ describe("clean-room AI-native core business suite", () => {
     const account = first(await run(store, ownerA, "crm", "account-upsert", { externalKey: "tenant-a", name: "Tenant A", domain: "a.example", idempotencyKey: key("account-a") }));
 
     await expect(run(store, ownerB, "crm", "activity-record", { accountId: account.id, kind: "note", occurredAt: fixedNow.toISOString(), summary: "Should never resolve", idempotencyKey: key("cross-tenant") })).rejects.toThrow(/not found/);
-    await expect(run(store, { ...ownerB, workspaceId: ownerA.workspaceId }, "crm", "pipeline-forecast", { currency: "USD", stageProbabilities: { qualified: 0.2 } })).rejects.toThrow(/workspace does not match/);
+    await expect(run(store, { ...ownerB, workspaceId: ownerA.workspaceId }, "crm", "pipeline-forecast", { currency: "USD", stageProbabilities: { qualified: 0.2 } })).rejects.toThrow(/workspace or role no longer matches/);
     await expect(run(store, { ...ownerA, scopes: ["crm:read"] }, "crm", "activity-record", { accountId: account.id, kind: "note", occurredAt: fixedNow.toISOString(), summary: "No write scope", idempotencyKey: key("scope-denied") })).rejects.toThrow(/crm:write scope/);
     expect(await store.getRecord(ownerB.userId, account.id)).toBeUndefined();
   });
@@ -75,6 +75,25 @@ describe("clean-room AI-native core business suite", () => {
     expect(await store.listRecords(auth.userId, { moduleId: "crm", recordType: "account", limit: 100 })).toHaveLength(1);
     expect(await store.listRecords(auth.userId, { moduleId: "crm", recordType: "command-receipt", limit: 100 })).toHaveLength(1);
     await expect(run(store, auth, "crm", "account-upsert", { ...input, name: "Different" })).rejects.toThrow(/idempotency key was already used/);
+    const memberId = randomUUID();
+    await store.addWorkspaceMember(auth.userId, memberId, "member");
+    const memberWorkspace = await store.getOrCreateWorkspace(memberId);
+    await expect(run(store, { userId: memberId, workspaceId: memberWorkspace.id, role: "member", scopes: ["*"] }, "crm", "account-upsert", input))
+      .rejects.toThrow(/another authenticated actor/);
+  });
+
+  it("does not admit another requester's private AI audit as evidence inside a trusted transaction", async () => {
+    const store = new MemorySuiteStore("fleet");
+    const owner = await actor(store);
+    const memberId = randomUUID();
+    await store.addWorkspaceMember(owner.userId, memberId, "member");
+    const memberWorkspace = await store.getOrCreateWorkspace(memberId);
+    const member = { userId: memberId, workspaceId: memberWorkspace.id, role: "member", scopes: ["*"] } satisfies CoreBusinessAuthorization;
+    const account = first(await run(store, owner, "crm", "account-upsert", { externalKey: "private-ai-audit", name: "Private audit account", domain: "private-audit.example", idempotencyKey: key("private-audit-account") }));
+    const privateRequest = await run(store, owner, "crm", "next-action-propose", { accountId: account.id, instruction: "Prepare a private owner proposal.", evidenceIds: [account.id], idempotencyKey: key("private-owner-ai") });
+    const privateAudit = first(privateRequest);
+    expect(await store.getRecord(memberId, privateAudit.id)).toBeUndefined();
+    await expect(run(store, member, "crm", "duplicate-review-propose", { recordId: account.id, instruction: "Must not read the owner's AI request.", evidenceIds: [privateAudit.id], idempotencyKey: key("private-audit-evidence") })).rejects.toThrow(/evidence not found/);
   });
 
   it("keeps external publication inert in dry-run and requires attributed approval to execute", async () => {
@@ -93,10 +112,47 @@ describe("clean-room AI-native core business suite", () => {
 
     await expect(run(store, auth, "publish", "publication-dispatch", { scheduledPostId: post.id, dryRun: false, idempotencyKey: key("dispatch-unapproved") }, externalDeps)).rejects.toThrow(/approval/);
     expect(executor).not.toHaveBeenCalled();
-    const live = await run(store, auth, "publish", "publication-dispatch", { scheduledPostId: post.id, dryRun: false, approval: { approved: true, approvedBy: auth.userId, decisionId: "publication.approval-0001", reason: "Copy and destination reviewed" }, idempotencyKey: key("dispatch-live") }, externalDeps);
+    const liveApproval = { approved: true, approvedBy: auth.userId, approvedAt: fixedNow.toISOString(), decisionId: "publication.approval-0001", reason: "Copy and destination reviewed" };
+    await expect(run(store, auth, "publish", "publication-dispatch", { scheduledPostId: post.id, dryRun: false, approval: { ...liveApproval, approvedAt: "2026-08-24T12:00:00.001Z", decisionId: "publication.future-approval-0001" }, idempotencyKey: key("dispatch-future") }, externalDeps)).rejects.toThrow(/future-dated/);
+    await expect(run(store, auth, "publish", "publication-dispatch", { scheduledPostId: post.id, dryRun: false, approval: { ...liveApproval, approvedAt: "2026-08-23T11:59:59.999Z", decisionId: "publication.stale-approval-0001" }, idempotencyKey: key("dispatch-stale") }, externalDeps)).rejects.toThrow(/stale/);
+    const live = await run(store, auth, "publish", "publication-dispatch", { scheduledPostId: post.id, dryRun: false, approval: liveApproval, idempotencyKey: key("dispatch-live") }, externalDeps);
     expect(executor).toHaveBeenCalledTimes(1);
     expect(live.audit).toMatchObject({ externalEffectExecuted: true, providerStatus: "accepted", approvedBy: auth.userId });
     expect(live.records.some((record) => record.recordType === "external-effect-receipt" && record.data.externalId === "accepted-42")).toBe(true);
+
+    const library = first(await run(store, auth, "knowledge", "library-create", { name: "Approval library", defaultAccess: "workspace", locale: "en-US", reviewCadenceDays: 30, idempotencyKey: key("approval-library") }));
+    const revision = first(await run(store, auth, "knowledge", "page-revision-draft", { libraryId: library.id, title: "Approval page", content: "Reviewed content", sourceIds: [], idempotencyKey: key("approval-revision") }));
+    await expect(run(store, auth, "knowledge", "page-revision-publish", { revisionId: revision.id, contentHash: revision.data.contentHash, dryRun: false, approval: liveApproval, idempotencyKey: key("cross-module-decision-reuse") }, externalDeps)).rejects.toThrow(/decision ID is already bound/);
+  });
+
+  it("rejects an approval decision already bound by another engine receipt type", async () => {
+    const store = new MemorySuiteStore("fleet");
+    const auth = await actor(store);
+    await store.enableModule(auth.userId, "projects");
+    const decisionId = "cross.engine.approval-0001";
+    const premiumReceipt = await store.createRecord(auth.userId, {
+      moduleId: "projects",
+      recordType: "premium-command-receipt",
+      title: "Prior premium approval",
+      state: "recorded",
+      data: {
+        actionId: "cycle-commit",
+        idempotencyKey: "prior-premium-idempotency-key",
+        actorUserId: auth.userId,
+        approvalDecisionId: decisionId,
+        immutable: true,
+      },
+    });
+    if (!premiumReceipt) throw new Error("Expected a prior premium receipt.");
+    const library = first(await run(store, auth, "knowledge", "library-create", { name: "Global approval library", defaultAccess: "workspace", locale: "en-US", reviewCadenceDays: 30, idempotencyKey: key("global-approval-library") }));
+    const revision = first(await run(store, auth, "knowledge", "page-revision-draft", { libraryId: library.id, title: "Global approval page", content: "Reviewed content", sourceIds: [], idempotencyKey: key("global-approval-revision") }));
+    await expect(run(store, auth, "knowledge", "page-revision-publish", {
+      revisionId: revision.id,
+      contentHash: revision.data.contentHash,
+      dryRun: false,
+      approval: { approved: true, approvedBy: auth.userId, approvedAt: fixedNow.toISOString(), decisionId, reason: "Reviewed exact revision" },
+      idempotencyKey: key("global-approval-publish"),
+    })).rejects.toThrow(/decision ID is already bound/);
   });
 
   it("queues auditable AI proposals without manufacturing model outputs or side effects", async () => {
@@ -192,5 +248,43 @@ describe("clean-room AI-native core business suite", () => {
     const imported = await importCoreBusinessSnapshotWithStorage(transactional, auth, snapshot);
     expect(imported).toMatchObject({ workspaceId: auth.workspaceId, snapshotHash: snapshot.snapshotHash, recordCount: snapshot.records.length, aiActionCount: 1 });
     expect(replaceSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed instead of treating saturated domain scans or snapshot pages as complete", async () => {
+    const store = new MemorySuiteStore("fleet");
+    const auth = await actor(store);
+    const fixture = first(await run(store, auth, "crm", "account-upsert", { externalKey: "saturation-fixture", name: "Saturation fixture", domain: "saturation.example", idempotencyKey: key("saturation-fixture") }));
+    const bind = (target: MemorySuiteStore, property: PropertyKey) => {
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    };
+
+    const saturatedDomainStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRecords") return async (userId: string, input: { moduleId?: string; recordType?: string; limit: number }) => {
+          if (input.moduleId === "crm" && input.recordType === "account") {
+            expect(input.limit).toBe(coreBusinessBoundedScanLimit + 1);
+            return Array(coreBusinessBoundedScanLimit + 1).fill(fixture);
+          }
+          return target.listRecords(userId, input);
+        };
+        return bind(target, property);
+      },
+    }) as unknown as MemorySuiteStore;
+    await expect(run(saturatedDomainStore, auth, "crm", "account-upsert", { externalKey: "must-not-truncate", name: "Must not truncate", domain: "blocked.example", idempotencyKey: key("saturated-domain") })).rejects.toThrow(/bounded crm\/account scan is saturated/);
+
+    const saturatedSnapshotStore = new Proxy(store, {
+      get(target, property) {
+        if (property === "listRecords") return async (userId: string, input: { moduleId?: string; recordType?: string; limit: number }) => {
+          if (input.moduleId === "automate" && input.recordType === undefined) {
+            expect(input.limit).toBe(100_001);
+            return Array(100_001).fill(fixture);
+          }
+          return target.listRecords(userId, input);
+        };
+        return bind(target, property);
+      },
+    }) as unknown as MemorySuiteStore;
+    await expect(exportCoreBusinessSnapshot(saturatedSnapshotStore, auth, fixedNow)).rejects.toThrow(/automate module is too large.*complete/);
   });
 });

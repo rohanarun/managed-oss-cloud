@@ -21,11 +21,11 @@ The checked-in hosted defaults are:
 
 | Plan | Price | Infrastructure allocation | Platform fee | Suite access | Application quota |
 | --- | ---: | ---: | ---: | --- | --- |
-| Starter | $7/month | $5.00 | $2.00 | 22 Starter modules | 1.5 GB memory, 0.5 vCPU, 10 GB storage, 2 services |
-| Scale | $50/month | $44.64 | $5.36 | 25 modules, including Projects, Drive, Channels | 6 GB memory, 2 vCPU, 100 GB storage, 12 services |
-| Fleet | $200/month | $178.57 | $21.43 | all 27 modules, including Operations and Assistant | 24 GB memory, 8 vCPU, 500 GB storage, 50 services |
+| Starter | $7/month | $5.00 | $2.00 | 23 Starter modules | 1.5 GB memory, 0.5 vCPU, 10 GB storage, 2 services |
+| Scale | $50/month | $44.64 | $5.36 | 32 modules, including Projects, Drive, Channels, meetings, insights, learning, community, events, and people | 6 GB memory, 2 vCPU, 100 GB storage, 12 services |
+| Fleet | $200/month | $178.57 | $21.43 | all 37 modules, including Operations, Assistant, metering, assurance, and live | 24 GB memory, 8 vCPU, 500 GB storage, 50 services |
 
-The suite count is derived from the current 27-module registry. These are
+The suite count is derived from the current 37-module registry. These are
 pooled logical quotas, not dedicated-VM promises. A private self-host can use
 `SUITE_ENTITLEMENT_MODE=unrestricted` and does not need Stripe to unlock the MIT
 suite.

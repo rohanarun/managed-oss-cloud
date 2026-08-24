@@ -187,7 +187,10 @@ describePostgres("PostgreSQL suite isolation", () => {
 
       await runtime.query("BEGIN");
       await runtime.query("SET LOCAL ROLE managed_oss_migrator");
-      expect((await runtime.query("SELECT COUNT(*)::INT count FROM managed_schema_migrations")).rows[0].count).toBe(14);
+      expect((await runtime.query("SELECT version FROM managed_schema_migrations ORDER BY version")).rows.map((row) => row.version)).toEqual([
+        "001", "002", "003", "004", "005", "006", "007", "008",
+        "009", "010", "011", "012", "013", "014", "015", "016", "017", "018",
+      ]);
       await runtime.query("ROLLBACK");
     } finally {
       runtime.release();
@@ -685,9 +688,10 @@ describePostgres("PostgreSQL suite isolation", () => {
     isolatedDatabaseUrl.pathname = `/${databaseName}`;
     const pool = new pg.Pool({ connectionString: isolatedDatabaseUrl.toString(), ssl: false });
     try {
+      await pool.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
       await runDatabaseMigrations(pool, await loadDatabaseMigrations(), { mode: "auto" });
     expect((await pool.query("SELECT version FROM managed_schema_migrations ORDER BY version")).rows.map((row) => row.version)).toEqual([
-      "001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014",
+      "001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018",
     ]);
 
     const starter = config.plans.find((plan) => plan.id === "starter")!;

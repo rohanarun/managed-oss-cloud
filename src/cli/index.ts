@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { suiteModuleById, suiteModules } from "../shared/suite.js";
 import { suiteAction, suiteActions, suiteActionsByModule } from "../shared/suite-actions.js";
+import { managedOssPackageVersion } from "../shared/package-version.js";
 import { describeSuiteAction, parseJsonObject, validateSuiteActionInput } from "./action-input.js";
 import { clientFromEnvironment } from "./client.js";
 
@@ -8,6 +9,7 @@ function usage() {
   return `SuperSuite CLI
 
 Usage:
+  supersuite version
   supersuite modules
   supersuite actions [module]
   supersuite action-help <module> <action>
@@ -36,6 +38,7 @@ function moduleOrThrow(id: string | undefined) {
 async function run() {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === "help" || command === "--help" || command === "-h") return process.stdout.write(`${usage()}\n`);
+  if (command === "version" || command === "--version" || command === "-v") return process.stdout.write(`${managedOssPackageVersion()}\n`);
   if (command === "modules") return process.stdout.write(`${JSON.stringify(suiteModules, null, 2)}\n`);
   if (command === "actions") {
     const actions = args[0] ? suiteActionsByModule.get(moduleOrThrow(args[0]).id) ?? [] : suiteActions;

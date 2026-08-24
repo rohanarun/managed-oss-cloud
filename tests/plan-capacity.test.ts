@@ -5,6 +5,10 @@ import { applicationCapacityUsage, capacityEnvelopeFit, planCapacitySnapshot, po
 import type { ApplicationInstance, ComputePlan } from "../src/shared/types";
 import { loadDatabaseMigrations } from "../src/server/database-migrations";
 import { MemoryRepository } from "../src/server/repository";
+import { premiumBusinessModules } from "../src/shared/premium-business-actions";
+import { additiveBusinessModules } from "../src/shared/additive-business-actions";
+import { additiveWaveTwoModules } from "../src/shared/extended-business-actions";
+import { suiteModuleById, suiteModules, suitePlanAllows } from "../src/shared/suite";
 
 const plan = (input: Partial<ComputePlan> = {}): ComputePlan => ({
   id: "scale",
@@ -35,12 +39,46 @@ const application = (input: Partial<ApplicationInstance> = {}): ApplicationInsta
 });
 
 describe("paid plan capacity envelopes", () => {
+  it("derives all shared-suite plan and resource gates from the registered module contracts", () => {
+    expect(suiteModules).toHaveLength(37);
+    expect(suiteModules.filter((module) => suitePlanAllows("starter", module))).toHaveLength(23);
+    expect(suiteModules.filter((module) => suitePlanAllows("scale", module))).toHaveLength(32);
+    expect(suiteModules.filter((module) => suitePlanAllows("fleet", module))).toHaveLength(37);
+    for (const module of [...additiveBusinessModules, ...additiveWaveTwoModules]) {
+      expect(suiteModuleById.get(module.id)).toMatchObject({
+        minPlan: module.minPlan,
+        resourceClass: module.resource.class,
+        resourceRequirements: module.resource,
+      });
+    }
+  });
+
   it("persists the complete logical plan quota independently of today's application usage", () => {
     const allocation = planCapacitySnapshot(plan());
     const usage = applicationCapacityUsage([application()], 192);
     expect(allocation).toEqual({ planId: "scale", memoryMb: 6_144, cpuMillis: 2_000, storageGb: 100, maxServices: 12 });
     expect(usage).toEqual({ memoryMb: 704, cpuMillis: 250, storageGb: 5, services: 1 });
     expect(capacityEnvelopeFit(usage, allocation)).toMatchObject({ fits: true, remaining: { memoryMb: 5_440, cpuMillis: 1_750, storageGb: 95, services: 11 } });
+  });
+
+  it("fits the exact premium Scale cohort in Scale and the full premium cohort in Fleet", () => {
+    const usageFor = (modules: typeof premiumBusinessModules[number][]) => ({
+      memoryMb: modules.reduce((sum, module) => sum + module.resource.minimumMemoryMiB, 0),
+      cpuMillis: modules.reduce((sum, module) => sum + module.resource.minimumCpuMillicores, 0),
+      storageGb: modules.reduce((sum, module) => sum + module.resource.includedStorageGb, 0),
+      services: modules.length,
+    });
+    const scaleModules = premiumBusinessModules.filter((module) => module.minPlan === "scale");
+    const allModules = [...premiumBusinessModules];
+    const scaleUsage = usageFor(scaleModules);
+    const fleetUsage = usageFor(allModules);
+    const scale = planCapacitySnapshot(plan());
+    const fleet = planCapacitySnapshot(plan({ id: "fleet", label: "Fleet", memoryMb: 24_576, cpu: 8, storageGb: 500, maxServices: 50, infrastructureMonthlyCents: 17_857, monthlyCents: 20_000 }));
+    expect(scaleUsage).toEqual({ memoryMb: 2_816, cpuMillis: 1_850, storageGb: 62, services: 3 });
+    expect(fleetUsage).toEqual({ memoryMb: 8_960, cpuMillis: 4_850, storageGb: 117, services: 5 });
+    expect(capacityEnvelopeFit(scaleUsage, scale)).toMatchObject({ fits: true, remaining: { memoryMb: 3_328, cpuMillis: 150, storageGb: 38, services: 9 } });
+    expect(capacityEnvelopeFit(fleetUsage, fleet)).toMatchObject({ fits: true, remaining: { memoryMb: 15_616, cpuMillis: 3_150, storageGb: 383, services: 45 } });
+    expect(capacityEnvelopeFit(fleetUsage, scale)).toMatchObject({ fits: false, exceeded: expect.arrayContaining(["cpuMillis", "storageGb"]) });
   });
 
   it("computes the positive logical upgrade delta while a downgrade needs no added quota", () => {

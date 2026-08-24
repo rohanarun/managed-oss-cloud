@@ -1,6 +1,6 @@
 {
   "name": "managed-oss-cloud",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -15,12 +15,14 @@
     "gateway": "node dist-server/server/gateway-reconciler.js",
     "ai-worker": "node dist-server/server/ai-worker.js",
     "test": "vitest run",
+    "test:postgres-acceptance": "vitest run tests/postgres-shared-clients.acceptance.test.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "cli": "tsx src/cli/index.ts",
     "mcp": "tsx src/mcp/index.ts",
     "verify:mcp": "node scripts/verify-mcp.mjs",
     "audit:licenses": "node scripts/license-audit.mjs",
     "migrate": "node dist-server/server/migrate-command.js",
+    "attest:external-evidence": "node dist-server/server/external-evidence-attestation-command.js",
     "reconcile:subscriptions": "node dist-server/server/reconcile-subscriptions-command.js",
     "reconcile:subscriptions:worker": "node dist-server/server/subscription-reconciliation-worker.js"
   },

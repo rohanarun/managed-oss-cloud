@@ -51,6 +51,10 @@ export async function loadDatabaseMigrations(rootDirectory = projectDirectory): 
     { version: "012", name: "managed-oauth-broker", sql: await readFile(path.join(rootDirectory, "db/migrations/012-managed-oauth-broker.sql"), "utf8") },
     { version: "013", name: "billing-capacity-atomicity", sql: await readFile(path.join(rootDirectory, "db/migrations/013-billing-capacity-atomicity.sql"), "utf8") },
     { version: "014", name: "suite-storage-accounting", sql: await readFile(path.join(rootDirectory, "db/migrations/014-suite-storage-accounting.sql"), "utf8") },
+    { version: "015", name: "runtime-resource-reservations", sql: await readFile(path.join(rootDirectory, "db/migrations/015-runtime-resource-reservations.sql"), "utf8") },
+    { version: "016", name: "additive-extended-ai-contracts", sql: await readFile(path.join(rootDirectory, "db/migrations/016-additive-extended-ai-contracts.sql"), "utf8") },
+    { version: "017", name: "ai-requester-claim-visibility", sql: await readFile(path.join(rootDirectory, "db/migrations/017-ai-requester-claim-visibility.sql"), "utf8") },
+    { version: "018", name: "domain-identity-invariants", sql: await readFile(path.join(rootDirectory, "db/migrations/018-domain-identity-invariants.sql"), "utf8") },
   ];
 }
 

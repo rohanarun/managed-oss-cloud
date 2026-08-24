@@ -181,7 +181,7 @@ describe("clean-room consent and SEO modules", () => {
     const ai = await executeSuiteAction(store, userA, "seo", "brief-draft", { siteId: site.id, keywordId: keyword.id, evidenceIds: [check.id], instruction: "Draft an outline using only the selected evidence.", connectorToken: "secret-token" }, dependencies());
     expect(ai.kind).toBe("ai-action");
     if (ai.kind === "ai-action") {
-      expect(ai.aiAction.context).toEqual({ actionId: "brief-draft", siteId: site.id, keywordId: keyword.id, evidenceIds: [check.id], instruction: "Draft an outline using only the selected evidence." });
+      expect(ai.aiAction.context).toEqual({ actionId: "brief-draft", siteId: site.id, keywordId: keyword.id, evidenceIds: [check.id], instruction: "Draft an outline using only the selected evidence.", requestedByUserId: userA });
       expect(JSON.stringify(ai.aiAction.context)).not.toContain("secret-token");
     }
   });

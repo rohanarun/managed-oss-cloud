@@ -94,11 +94,12 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 verifier="$script_dir/provenance/verify-control-plane-image.sh"
 readiness="$script_dir/readiness/control-plane-ready.sh"
 database_configurator="${DATABASE_ROLE_CONFIGURATOR:-$script_dir/database/configure-role-logins.sh}"
+domain_identity_preflight="$script_dir/database/preflight-migration-018-domain-identities.sql"
 firewall_source="$script_dir/worker/metadata-firewall.sh"
 firewall_service_source="$script_dir/worker/managed-oss-metadata-firewall.service"
 firewall_drop_in_source="$script_dir/worker/docker-metadata-firewall.conf"
 firewall_proof_source="$script_dir/metadata-firewall-proof.sh"
-[[ -x "$verifier" && -x "$readiness" && -x "$database_configurator" && -f "$firewall_source" && -f "$firewall_service_source" && -f "$firewall_drop_in_source" && -f "$firewall_proof_source" ]] || die "trusted provenance, metadata-firewall, database-role, and readiness scripts are unavailable"
+[[ -x "$verifier" && -x "$readiness" && -x "$database_configurator" && -f "$domain_identity_preflight" && ! -L "$domain_identity_preflight" && -f "$firewall_source" && -f "$firewall_service_source" && -f "$firewall_drop_in_source" && -f "$firewall_proof_source" ]] || die "trusted provenance, metadata-firewall, database-role, migration preflight, and readiness files are unavailable"
 install -d -m 0750 "$proof_dir"
 proof_file="$proof_dir/control-plane-${image_hex}-${source_commit}-$(date -u +%Y%m%dT%H%M%SZ).json"
 metadata_proof_file="$proof_dir/control-plane-metadata-${image_hex}-$(date -u +%Y%m%dT%H%M%SZ).json"
@@ -158,14 +159,13 @@ compose() {
 set -a
 source "$runtime_env"
 set +a
+postgres_env="$compose_dir/postgres.env"
+[[ -f "$postgres_env" && ! -L "$postgres_env" ]] || die "postgres.env is required for the administrator-owned pgcrypto dependency preflight"
+postgres_password="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$postgres_env")"
+[[ "$postgres_password" =~ ^[a-f0-9]{64}$ ]] || die "postgres.env does not contain the expected generated administrator password"
 if [[ ! -f "$compose_dir/database-role-passwords.env" ]]; then
-  postgres_env="$compose_dir/postgres.env"
-  [[ -f "$postgres_env" && ! -L "$postgres_env" ]] || die "postgres.env is required to bootstrap scoped database roles"
-  postgres_password="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$postgres_env")"
-  [[ "$postgres_password" =~ ^[a-f0-9]{64}$ ]] || die "postgres.env does not contain the expected generated administrator password"
   printf 'DATABASE_MIGRATOR_URL=postgresql://opendock:%s@database:5432/opendock\n' "$postgres_password" >"$compose_dir/database-migrator.env"
   chmod 0600 "$compose_dir/database-migrator.env"
-  postgres_password=""
 fi
 for service_env in database-control.env database-suite.env database-ai.env; do
   if [[ ! -f "$compose_dir/$service_env" ]]; then
@@ -173,6 +173,43 @@ for service_env in database-control.env database-suite.env database-ai.env; do
   fi
 done
 compose --profile operations pull
+printf '%s\n' "$postgres_password" | compose exec -T database sh -ceu '
+  IFS= read -r PGPASSWORD
+  export PGPASSWORD
+  psql -X -q -v ON_ERROR_STOP=1 -h 127.0.0.1 -U opendock -d opendock -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+'
+domain_identity_report="$({
+  printf '%s\n' "$postgres_password"
+  cat -- "$domain_identity_preflight"
+} | compose exec -T database sh -ceu '
+  IFS= read -r PGPASSWORD
+  case "$PGPASSWORD" in *[!a-f0-9]*|"") exit 64 ;; esac
+  [ "${#PGPASSWORD}" -eq 64 ]
+  export PGPASSWORD
+  psql -X -q -v ON_ERROR_STOP=1 -A -t -F "|" -h 127.0.0.1 -U opendock -d opendock -f -
+')" || die "migration 018 domain-identity duplicate preflight could not complete"
+domain_identity_report_status=0
+printf '%s\n' "$domain_identity_report" | awk -F '|' '
+  {
+    rows += 1
+    if (NF != 2 || $1 !~ /^suite_[a-z0-9_]+_unique$/ || $2 !~ /^(0|[1-9][0-9]*)$/ || seen[$1]++) invalid = 1
+    if ($2 != "0") duplicates = 1
+  }
+  END {
+    unique_names = 0
+    for (name in seen) unique_names += 1
+    if (invalid || rows != 24 || unique_names != 24) exit 2
+    if (duplicates) exit 1
+  }
+' || domain_identity_report_status=$?
+if (( domain_identity_report_status == 2 )); then
+  die "migration 018 domain-identity duplicate preflight returned an invalid privacy-safe report"
+fi
+printf '%s\n' "$domain_identity_report"
+if (( domain_identity_report_status != 0 )); then
+  die "migration 018 domain-identity duplicate preflight found duplicate groups; resolve them through an independently reviewed evidence-preserving process before rollout"
+fi
+postgres_password=""
 compose --profile operations run --rm migrate
 MANAGED_OSS_COMPOSE_DIR="$compose_dir" "$database_configurator"
 rm -f -- "$ready_marker"

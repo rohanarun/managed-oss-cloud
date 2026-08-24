@@ -70,7 +70,7 @@ describe("e-signature rewrite integration", () => {
   it("pins trusted model evidence and atomic PostgreSQL completion boundaries", () => {
     const worker = readFileSync("src/server/ai-worker.ts", "utf8");
     const migration = readFileSync("db/migrations/010-esign-atomicity-and-invariants.sql", "utf8");
-    expect(worker).toContain('version === "esign-ai-result.v1"');
+    expect(worker).toContain('contractVersion === "esign-ai-result.v1"');
     expect(worker).toContain("esignPromptDigest()");
     expect(worker).toContain("validateEsignAiCompletion");
     expect(worker).toContain("targetRecordHash");

@@ -6,7 +6,7 @@ Managed OSS Cloud is an MIT-licensed control plane and an original AI-native bus
 
 ## Current status
 
-The source registry in this checkout contains **27 first-party modules, 300 typed actions, and 330 MCP tools**. The MCP total is generated as three suite-level tools, one read-only list tool for each module, and one separately named tool for every typed action. Generic create/update/AI bypass tools are intentionally absent.
+The source registry in this checkout contains **37 first-party modules, 407 typed actions, and 447 MCP tools**. The MCP total is generated as three suite-level tools, one read-only list tool for each module, and one separately named tool for every typed action. Generic create/update/AI bypass tools are intentionally absent.
 
 The hosted site is not yet running this source release. Read-only checks on 2026-08-24 showed:
 
@@ -15,7 +15,7 @@ The hosted site is not yet running this source release. Read-only checks on 2026
 - the new suite catalogue route returned the older SPA shell; and
 - the hosted e-sign session route returned `404`.
 
-Therefore the managed-service link is a preview, not proof that billing, one-click provisioning, the 27-module suite, or the hosted signer is live. The repository defaults remain `PROVISIONING_MODE=dry-run` and `BILLING_MODE=disabled`. Deployments must verify their own health, config, migrations, worker capacity, routes, and browser workflows before advertising those capabilities.
+Therefore the managed-service link is a preview, not proof that billing, one-click provisioning, the 37-module suite, or the hosted signer is live. The repository defaults remain `PROVISIONING_MODE=dry-run` and `BILLING_MODE=disabled`. Deployments must verify their own health, config, migrations, worker capacity, routes, and browser workflows before advertising those capabilities.
 
 ## Implemented in source
 
@@ -31,11 +31,11 @@ Therefore the managed-service link is a preview, not proof that billing, one-cli
 - Capacity-aware per-application placement, renewable job leases, and per-worker CPU, memory, and storage reservations.
 - DNS verification, CNAME targets, a central dynamic Caddy gateway, private worker ingress, and automatic TLS after ownership resolves.
 - Dry-run safety: checkout and provider mutations fail closed independently until their production gates pass.
-- A first-party MIT suite with 27 modules, one shared PostgreSQL data plane, cross-module records and events, scoped API tokens, transaction-local workspace context, and forced row-level security for suite tables.
+- A first-party MIT suite with 37 modules, one shared PostgreSQL data plane, cross-module records and events, scoped API tokens, transaction-local workspace context, and forced row-level security for suite tables.
 - Hosted accounts start with no module entitlement. A verified active or trialing Stripe subscription unlocks Starter, Scale, or Fleet modules; cancellation removes mutation and public-domain access immediately. Self-hosters can explicitly choose unrestricted suite mode.
 - A provider-neutral AI action queue with a separate least-privilege worker. Model output is advisory and side effects always require a separate approved executor.
 - An explicit, optional `local-ai` profile with a digest-pinned Ollama runtime, persistent Apache-2.0 Qwen3 4B weights, private-only networking, health-gated model initialization, and bounded default concurrency.
-- A schema-aware `supersuite` CLI plus 330 MCP tools generated from the same 27-module/300-action registry.
+- A schema-aware `supersuite` CLI plus 447 MCP tools generated from the same 37-module/407-action registry.
 
 The production data path uses PostgreSQL. Local development without `DATABASE_URL` deliberately uses temporary in-memory accounts and is not durability evidence.
 
@@ -50,8 +50,10 @@ These are clean, original implementations. Product names in the second column ar
 | Specialist business operations | 9 | 120 | Starter |
 | E-signature workflow | 1 | 14 | Starter |
 | Letterline email marketing | 1 | 16 | Starter |
+| Shared business graph | 5 | 46 | Starter or Scale |
+| Governed operations | 5 | 61 | Scale or Fleet |
 | Higher-resource modules | 5 | 42 | Scale or Fleet |
-| **Total** | **27** | **300** |  |
+| **Total** | **37** | **407** |  |
 
 | Module | Product category reference | Minimum plan | AI-native foundation |
 | --- | --- | --- | --- |
@@ -77,13 +79,23 @@ These are clean, original implementations. Product names in the second column ar
 | Feature Flags | OpenFeature and public experimentation standards | $7 Starter | Review-only rollout plans and evidence-linked evaluation explanations |
 | E-Signature Workflow | Public electronic-signature workflow standards | $7 Starter | Cited clause/field proposals; no autonomous consent or compliance claim |
 | Letterline | Public permission-based email marketing standards | $7 Starter | Cited subject/body proposals with human review and provider-neutral dispatch plans |
+| SchemaDeck | Public relational-data and spreadsheet patterns | $7 Starter | Version-pinned schema proposals and deterministic formulas |
+| Recall Room | Public meeting transcript and action-ledger patterns | $50 Scale | Transcript-cited proposals and human-owned decisions |
+| Proofline Insights | Public business-intelligence and measurement patterns | $50 Scale | Measurement-clock provenance and fact/hypothesis separation |
+| Learning Forge | Public learning-management and credential patterns | $50 Scale | Rubric-grounded proposals and human-issued credentials |
+| Circlefield | Public forum and community-management patterns | $50 Scale | Policy-cited moderation proposals and reviewed announcements |
+| GatherLedger | Public event, ticketing, and access-control patterns | $50 Scale | Receipt-bound inventory, money, access, and attendee proposals |
+| PeopleWeave | Public HRIS and employment-record patterns | $50 Scale | Human employment decisions and cited development proposals |
+| MeterProof | Public usage-metering and billing-ledger patterns | $200 Fleet | Deterministic charges and evidence-cited invoice explanations |
+| AssureGraph | Public risk, control, and audit-evidence patterns | $200 Fleet | Human control outcomes and cited gap proposals |
+| LiveForum | Public livestream, chat, and media-consent patterns | $200 Fleet | Consent-pinned broadcast state and unpublished replay proposals |
 | Projects | Plane | $50 Scale | Issue writing, cycle planning, delivery risk |
 | Drive | Nextcloud | $50 Scale | Classification, extraction, related-file discovery |
 | Channels | Zulip | $50 Scale | Topic summaries, decisions, response drafts |
 | Operations | ERPNext | $200 Fleet | Forecasting, reconciliation, margin explanations |
 | Assistant | LibreChat | $200 Fleet | Workspace answers, approved tools, reusable agents |
 
-All suite records carry a `workspace_id`. One PostgreSQL service may contain many customer workspaces, with transaction-local workspace context, forced row-level security, and separate runtime, AI, owner, and migrator roles. Inside a customer workspace, enabled modules intentionally share the record/link/event graph so contacts, files, evidence, and workflows can be connected without running 27 databases. This is logical tenant isolation in one data plane, not a dedicated database server per customer.
+All suite records carry a `workspace_id`. One PostgreSQL service may contain many customer workspaces, with transaction-local workspace context, forced row-level security, and separate runtime, AI, owner, and migrator roles. Inside a customer workspace, enabled modules intentionally share the record/link/event graph so contacts, files, evidence, and workflows can be connected without running 37 databases. This is logical tenant isolation in one data plane, not a dedicated database server per customer.
 
 The separately installable upstream catalogue is a different boundary. Each upstream application retains its own database or volume layout and licence; installing one does not merge its private schema into the first-party suite database.
 
@@ -120,7 +132,7 @@ npm run mcp
 
 `supersuite modules`, `supersuite actions [module]`, and `supersuite action-help <module> <action>` work offline. Action help prints required scope, fields, JSON Schema, example input, and MCP tool name. Action calls reject malformed JSON, missing fields, and invalid typed values before making a network request. There is no generic CLI create or AI command; every mutation and model request must use a registered action so tenant, version, evidence, idempotency, and approval invariants run through the shared engine.
 
-The MCP server publishes 330 discoverable tools: `suite_catalog`, `suite_workspace`, and `suite_ai_status`; one namespaced list tool for each of 27 modules; and 300 separately named workflow tools. Each action tool exposes named typed parameters instead of an opaque action selector and advertises its required API-token scope in MCP metadata. Read-only tools accept least-privilege `read` tokens; mutation and AI tools require their separate scopes. Arbitrary SQL, shell commands, provider credentials, unrestricted paths, and generic record mutation are outside the MCP contract.
+The MCP server publishes 447 discoverable tools: `suite_catalog`, `suite_workspace`, and `suite_ai_status`; one namespaced list tool for each of 37 modules; and 407 separately named workflow tools. Each action tool exposes named typed parameters instead of an opaque action selector and advertises its required API-token scope in MCP metadata. Read-only tools accept least-privilege `read` tokens; mutation and AI tools require their separate scopes. Arbitrary SQL, shell commands, provider credentials, unrestricted paths, and generic record mutation are outside the MCP contract.
 
 ## AI runtime
 
@@ -186,6 +198,7 @@ SUITE_ENTITLEMENT_MODE=hosted    # hosted: Stripe-derived plan; unrestricted: se
 HOSTING_ENTITLEMENT_MODE=hosted  # hosted: installs/routes require the same provider-backed entitlement
 CONSENT_POLICY_SIGNING_PRIVATE_KEY= # base64 PKCS#8 Ed25519 key from Secret Manager
 CONSENT_POLICY_PREVIOUS_PUBLIC_KEYS_JSON=[] # retained public Ed25519 keys for historical receipt verification
+EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET= # dedicated Secret Manager value used only by trusted source adapters
 ```
 
 Machine prices are configuration, not application constants. Set them from the current provider quote for the selected project and region.
@@ -194,9 +207,9 @@ The hosted defaults expose three pooled-capacity plans. They are customer quotas
 
 | Plan | Monthly total | Suite modules unlocked | Memory quota | CPU quota | Storage quota | Service instances |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Starter | $7 | 22 | 1.5 GB | 0.5 vCPU | 10 GB | 2 |
-| Scale | $50 | 25 | 6 GB | 2 vCPU | 100 GB | 12 |
-| Fleet | $200 | 27 | 24 GB | 8 vCPU | 500 GB | 50 |
+| Starter | $7 | 23 | 1.5 GB | 0.5 vCPU | 10 GB | 2 |
+| Scale | $50 | 32 | 6 GB | 2 vCPU | 100 GB | 12 |
+| Fleet | $200 | 37 | 24 GB | 8 vCPU | 500 GB | 50 |
 
 The configured totals break down as Starter $5 infrastructure + $2 platform fee, Scale $44.64 + $5.36, and Fleet $178.57 + $21.43. These are logical customer quotas across the private worker fleet, not dedicated VM promises. Suite-only customers reserve no per-customer application-container capacity. A user can clone the same verified upstream service multiple times; every clone receives a separate hostname, container project, volume reservation, and placement decision. Upgrades reconcile the existing Stripe subscription before the stored quota changes.
 

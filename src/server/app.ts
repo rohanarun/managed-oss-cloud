@@ -22,7 +22,8 @@ import { runtimeReservation } from "./app-manifests.js";
 import { ManagedGoogleOAuthBroker, ManagedOAuthBrokerError, type ManagedGoogleOAuthBrokerLike, type ManagedOAuthTenantPost } from "./managed-oauth.js";
 import { createRepository, type Repository } from "./repository.js";
 import { createSuiteStore, type SuiteStore } from "./suite-store.js";
-import { executeSuiteAction } from "./suite-engine.js";
+import { executeSuiteAction, type SuiteEngineDependencies } from "./suite-engine.js";
+import { createExtendedExternalEvidenceVerifier } from "./extended-external-evidence.js";
 import { PublicSigningService, validatePublicVerificationKey, type PublicVerificationKey } from "./public-signing.js";
 import { resolvePublicHttpsDestination, type PublicDestinationResolver } from "./public-destination.js";
 import { PublicGrowthError, PublicGrowthService, type PublishedPageProjection, type PublishedWidgetProjection } from "./public-growth.js";
@@ -172,7 +173,7 @@ function publicRecordProjection(record: Awaited<ReturnType<SuiteStore["listPubli
   return { id: record.id, title: record.title, state: record.state, data: Object.fromEntries(Object.entries(record.data).filter(([key]) => allowed.has(key))), updatedAt: record.updatedAt };
 }
 
-export async function createApp(options: { repository?: Repository; suiteStore?: SuiteStore; hostnameRegistry?: MemoryHostnameClaimRegistry; billingGateway?: BillingGateway; billingSettings?: BillingSettings; domainResolver?: DomainResolver; publicDestinationResolver?: PublicDestinationResolver; workerBootstrapToken?: string; gcpWorkerIdentityVerifier?: { verify(token: string): Promise<GcpWorkerIdentity> }; gatewayReconcilerToken?: string; agentJobsEnabled?: boolean; provisioningReadyForBilling?: boolean; consentPolicySigningKey?: string | Buffer | KeyObject; consentPolicyPreviousVerificationKeys?: readonly PublicVerificationKey[]; suiteEntitlementMode?: "hosted" | "unrestricted"; synchronizeSuiteEntitlements?: boolean; managedGoogleOAuthBroker?: ManagedGoogleOAuthBrokerLike; hostedEsign?: { objectLoader: HostedEsignObjectLoader; rateLimiter: HostedEsignRateLimiter; allowedOrigins: readonly string[]; clientKey: (request: Request) => string } } = {}) {
+export async function createApp(options: { repository?: Repository; suiteStore?: SuiteStore; hostnameRegistry?: MemoryHostnameClaimRegistry; billingGateway?: BillingGateway; billingSettings?: BillingSettings; domainResolver?: DomainResolver; publicDestinationResolver?: PublicDestinationResolver; workerBootstrapToken?: string; gcpWorkerIdentityVerifier?: { verify(token: string): Promise<GcpWorkerIdentity> }; gatewayReconcilerToken?: string; agentJobsEnabled?: boolean; provisioningReadyForBilling?: boolean; consentPolicySigningKey?: string | Buffer | KeyObject; consentPolicyPreviousVerificationKeys?: readonly PublicVerificationKey[]; suiteEntitlementMode?: "hosted" | "unrestricted"; synchronizeSuiteEntitlements?: boolean; managedGoogleOAuthBroker?: ManagedGoogleOAuthBrokerLike; verifyExtendedExternalEvidence?: SuiteEngineDependencies["verifyExtendedExternalEvidence"]; hostedEsign?: { objectLoader: HostedEsignObjectLoader; rateLimiter: HostedEsignRateLimiter; allowedOrigins: readonly string[]; clientKey: (request: Request) => string } } = {}) {
   const app = express();
   const repository = options.repository ?? createRepository();
   const suiteStore = options.suiteStore ?? createSuiteStore();
@@ -196,6 +197,7 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
   const agentJobsEnabled = options.agentJobsEnabled ?? config.PROVISIONING_MODE === "live";
   const provisioningReadyForBilling = options.provisioningReadyForBilling ?? (config.PROVISIONING_MODE === "live" && agentJobsEnabled);
   const suiteEntitlementMode = options.suiteEntitlementMode ?? config.SUITE_ENTITLEMENT_MODE;
+  const verifyExtendedExternalEvidence = options.verifyExtendedExternalEvidence ?? (config.EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET ? createExtendedExternalEvidenceVerifier(config.EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET) : undefined);
   const consentPolicySigningKey = options.consentPolicySigningKey ?? config.CONSENT_POLICY_SIGNING_PRIVATE_KEY;
   const publicSigning = consentPolicySigningKey ? new PublicSigningService(consentPolicySigningKey) : undefined;
   const publicSigningVerificationKeys = publicSigning
@@ -573,7 +575,7 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
     if (!module || !suiteActionsByModule.get(module.id)?.some((action) => action.id === actionId)) return response.status(404).json({ error: "Module action not found." });
     if (!parsed.success) return response.status(400).json({ error: "Action input must be a JSON object." });
     try {
-      const result = await suiteStore.runInWorkspaceTransaction(response.locals.user.id, () => executeSuiteAction(suiteStore, response.locals.user.id, module.id, actionId, parsed.data.input));
+      const result = await suiteStore.runInWorkspaceTransaction(response.locals.user.id, () => executeSuiteAction(suiteStore, response.locals.user.id, module.id, actionId, parsed.data.input, { verifyExtendedExternalEvidence }));
       return response.status(result.kind === "record" ? 201 : result.kind === "command" || result.kind === "read" ? 200 : 202).json(result);
     } catch (error) {
       return response.status(409).json({ error: error instanceof Error ? error.message : "The module action could not run." });

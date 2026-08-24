@@ -43,13 +43,15 @@ function fieldError(field: SuiteActionFieldDefinition, value: unknown): string |
 }
 
 export function validateSuiteActionInput(action: SuiteActionDefinition, input: Record<string, unknown>) {
+  const schema = suiteActionInputJsonSchema(action);
   const errors = suiteActionFields(action).flatMap((field) => {
+    const present = Object.prototype.hasOwnProperty.call(input, field.name) && input[field.name] !== undefined;
+    if (!present) return field.required ? [`${field.name} is required.`] : [];
+    if (schema.additionalProperties === false) return [];
     const value = input[field.name];
-    if (value === undefined || value === null || value === "") return field.required ? [`${field.name} is required.`] : [];
     const error = fieldError(field, value);
     return error ? [error] : [];
   });
-  const schema = suiteActionInputJsonSchema(action);
   if (schema.additionalProperties === false) {
     for (const name of Object.keys(input)) if (!(name in schema.properties)) errors.push(`${name} is not allowed.`);
     const parsed = z.object(suiteActionMcpInputShape(action)).strict().safeParse(input);

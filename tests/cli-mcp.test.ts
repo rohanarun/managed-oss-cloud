@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { describeSuiteAction, parseJsonObject, validateSuiteActionInput } from "../src/cli/action-input";
 import { suiteActionMcpInput, suiteActionMcpInputShape } from "../src/mcp/action-schema";
 import { suiteModules, suiteToolName } from "../src/shared/suite";
+import { managedOssPackageVersion } from "../src/shared/package-version";
 import {
   suiteAction,
   suiteActionExampleInput,
@@ -14,6 +16,11 @@ import {
 } from "../src/shared/suite-actions";
 
 describe("SuperSuite CLI and MCP action discovery", () => {
+  it("derives the CLI and MCP version from the package manifest", () => {
+    const manifest = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+    expect(managedOssPackageVersion()).toBe(manifest.version);
+  });
+
   it("publishes one uniquely named typed MCP tool for every workflow action", () => {
     const baseNames = ["suite_catalog", "suite_workspace", "suite_ai_status"];
     for (const module of suiteModules) {
@@ -70,5 +77,40 @@ describe("SuperSuite CLI and MCP action discovery", () => {
       expect(parsed.success, `${action.moduleId}/${action.id}`).toBe(true);
     }
     expect(suiteActionMcpInput({ recordId: "named", additionalData: { recordId: "extra", reason: "test" } })).toEqual({ recordId: "named", reason: "test" });
+  });
+
+  it("validates every generated action example through the exact CLI schema path", () => {
+    for (const action of suiteActions) {
+      const example = suiteActionExampleInput(action);
+      expect(validateSuiteActionInput(action, example), `${action.moduleId}/${action.id}`).toEqual(example);
+    }
+
+    const nullable = suiteAction("inbox", "reply-send")!;
+    const nullableExample = suiteActionExampleInput(nullable);
+    expect(nullableExample.proposalId).toBeNull();
+    expect(validateSuiteActionInput(nullable, nullableExample)).toEqual(nullableExample);
+    const missingNullable = { ...nullableExample };
+    delete missingNullable.proposalId;
+    expect(() => validateSuiteActionInput(nullable, missingNullable)).toThrow(/proposalId is required/);
+
+    const boolean = suiteAction("email", "subscriber-list")!;
+    const booleanExample = suiteActionExampleInput(boolean);
+    expect(booleanExample.includeSuppressed).toBe(false);
+    expect(validateSuiteActionInput(boolean, booleanExample)).toEqual(booleanExample);
+    expect(() => validateSuiteActionInput(boolean, { ...booleanExample, includeSuppressed: "false" })).toThrow(/includeSuppressed/);
+
+    const emptyString = suiteAction("tables", "formula-evaluate")!;
+    const emptyStringExample = suiteActionExampleInput(emptyString);
+    expect(emptyStringExample.fieldKey).toBe("");
+    expect(validateSuiteActionInput(emptyString, emptyStringExample)).toEqual(emptyStringExample);
+    expect(() => validateSuiteActionInput(emptyString, { ...emptyStringExample, fieldKey: 1 })).toThrow(/fieldKey/);
+
+    for (const [moduleId, actionId, field] of [["insights", "alert-rule-create", "threshold"], ["metering", "ingest-event", "quantity"]] as const) {
+      const numeric = suiteAction(moduleId, actionId)!;
+      const numericExample = suiteActionExampleInput(numeric);
+      expect(typeof numericExample[field]).toBe("number");
+      expect(validateSuiteActionInput(numeric, numericExample)).toEqual(numericExample);
+      expect(() => validateSuiteActionInput(numeric, { ...numericExample, [field]: String(numericExample[field]) })).toThrow(new RegExp(field));
+    }
   });
 });

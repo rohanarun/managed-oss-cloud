@@ -131,7 +131,7 @@ describe("clean-room finance/time and notifications modules", () => {
     await expect(executeSuiteAction(store, otherOwner, "finance", "payment-record", paymentInput, dependencies)).rejects.toThrow(/not found/);
     const ai = await executeSuiteAction(store, owner, "finance", "reconciliation-suggest", { invoiceId: invoice.id, instruction: "Suggest a possible match from cited facts.", bankCredential: "must-not-enter-model" }, dependencies);
     expect(ai.kind).toBe("ai-action");
-    if (ai.kind === "ai-action") expect(ai.aiAction.context).toEqual({ actionId: "reconciliation-suggest", invoiceId: invoice.id, instruction: "Suggest a possible match from cited facts." });
+    if (ai.kind === "ai-action") expect(ai.aiAction.context).toEqual({ actionId: "reconciliation-suggest", invoiceId: invoice.id, instruction: "Suggest a possible match from cited facts.", requestedByUserId: owner });
   });
 
   it("rejects unsafe schemas and templates before any event or delivery record exists", async () => {
@@ -181,6 +181,6 @@ describe("clean-room finance/time and notifications modules", () => {
 
     const ai = await executeSuiteAction(store, owner, "notify", "workflow-suggest", { workflowId: fixture.workflow.id, instruction: "Suggest quieter wording.", providerSecret: "must-not-enter-model", payload: { private: true } }, dependencies);
     expect(ai.kind).toBe("ai-action");
-    if (ai.kind === "ai-action") expect(ai.aiAction.context).toEqual({ actionId: "workflow-suggest", workflowId: fixture.workflow.id, instruction: "Suggest quieter wording." });
+    if (ai.kind === "ai-action") expect(ai.aiAction.context).toEqual({ actionId: "workflow-suggest", workflowId: fixture.workflow.id, instruction: "Suggest quieter wording.", requestedByUserId: owner });
   });
 });

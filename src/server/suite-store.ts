@@ -32,6 +32,8 @@ import { config } from "./config.js";
 import { databaseTimestampIso } from "./postgres-values.js";
 import { ensureDatabaseMigrations } from "./database-migrations.js";
 import { hostnameClaimFromRow, hostnameOwnershipInstructions, insertPostgresHostnameClaim, MemoryHostnameClaimRegistry, newHostnameClaim, platformOwnedHostnameSuffixes, updatePostgresHostnameClaimStatus } from "./hostname-claims.js";
+import { transitionProposalOnlyAiAuditRecord, validateProposalOnlyAiJob } from "./ai-result.js";
+import { canReadSuiteRecord } from "./suite-record-visibility.js";
 
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 const planAllows = (plan: string, moduleId: string) => { const module = suiteModuleById.get(moduleId); return Boolean(module && (config.SUITE_ENTITLEMENT_MODE === "unrestricted" || suitePlanAllows(plan, module))); };
@@ -48,10 +50,74 @@ function recordPayloadBytes(data: Record<string, unknown> = {}) {
   return bytes;
 }
 
+function durableRecordVersion(record: SuiteRecord) {
+  const version = Number(record.data.version ?? 1);
+  return Number.isSafeInteger(version) && version >= 1 ? version : undefined;
+}
+
 function aiSelectedRecordIds(context: Record<string, unknown>) {
   const ids = Array.isArray(context.evidenceIds) ? context.evidenceIds.filter((value): value is string => typeof value === "string") : [];
   if (typeof context.targetRecordId === "string") ids.push(context.targetRecordId);
+  const legacySelectionKey = context.actionId === "finding-suggest"
+    ? "observationId"
+    : context.actionId === "reconciliation-suggest"
+      ? "invoiceId"
+      : context.actionId === "workflow-suggest"
+        ? "workflowId"
+        : undefined;
+  if (legacySelectionKey && typeof context[legacySelectionKey] === "string") ids.push(context[legacySelectionKey]);
+  const contractVersion = context.resultContract && typeof context.resultContract === "object" && !Array.isArray(context.resultContract)
+    ? (context.resultContract as Record<string, unknown>).version
+    : undefined;
+  if (contractVersion === "additive-business-proposal.v1" && typeof context.requestRecordId === "string") ids.push(context.requestRecordId);
+  if (contractVersion === "extended-business-proposal.v1" && typeof context.aiAuditRecordId === "string") ids.push(context.aiAuditRecordId);
   return [...new Set(ids)].slice(0, 1_000);
+}
+
+interface AssistantEvidenceBindingSelection {
+  attachmentRecordId: string;
+  attachmentVersion: number;
+  attachmentSnapshotHash: string;
+  collectionId: string;
+  sourceRecordId: string;
+  sourceModuleId: string;
+  sourceRecordType: string;
+  sourceVersion: number;
+  sourceSnapshotHash: string;
+  contentHash: string;
+}
+
+function assistantEvidenceBindings(action: SuiteAiAction): AssistantEvidenceBindingSelection[] {
+  if (action.moduleId !== "assistant" || (action.context.resultContract as { version?: unknown } | undefined)?.version !== "premium-business-ai-result.v1" || !Array.isArray(action.context.assistantEvidenceBindings)) return [];
+  return action.context.assistantEvidenceBindings.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const binding = value as Record<string, unknown>;
+    const stringFields = ["attachmentRecordId", "attachmentSnapshotHash", "collectionId", "sourceRecordId", "sourceModuleId", "sourceRecordType", "sourceSnapshotHash", "contentHash"] as const;
+    if (stringFields.some((field) => typeof binding[field] !== "string" || !String(binding[field]).trim()) || !Number.isSafeInteger(binding.attachmentVersion) || Number(binding.attachmentVersion) < 1 || !Number.isSafeInteger(binding.sourceVersion) || Number(binding.sourceVersion) < 1) return [];
+    return [binding as unknown as AssistantEvidenceBindingSelection];
+  });
+}
+
+function assistantAttachmentMatches(binding: AssistantEvidenceBindingSelection, attachment: SuiteRecord) {
+  return attachment.id === binding.attachmentRecordId
+    && attachment.moduleId === "assistant"
+    && attachment.recordType === "source-attachment"
+    && durableRecordVersion(attachment) === binding.attachmentVersion
+    && attachment.data.collectionId === binding.collectionId
+    && attachment.data.recordId === binding.sourceRecordId
+    && attachment.data.sourceModuleId === binding.sourceModuleId
+    && attachment.data.sourceRecordType === binding.sourceRecordType
+    && attachment.data.sourceVersion === binding.sourceVersion
+    && attachment.data.sourceSnapshotHash === binding.sourceSnapshotHash
+    && attachment.data.contentHash === binding.contentHash;
+}
+
+function assistantSourceMatches(binding: AssistantEvidenceBindingSelection, source: SuiteRecord, evidenceIds: Set<string>) {
+  return evidenceIds.has(source.id)
+    && source.id === binding.sourceRecordId
+    && source.moduleId === binding.sourceModuleId
+    && source.recordType === binding.sourceRecordType
+    && durableRecordVersion(source) === binding.sourceVersion;
 }
 
 export interface SuiteStore {
@@ -75,6 +141,8 @@ export interface SuiteStore {
   listRecords(userId: string, input: { moduleId?: string; recordType?: string; limit: number }): Promise<SuiteRecord[]>;
   findSignerSessionByTokenHash(userId: string, tokenHash: string): Promise<SuiteRecord | undefined>;
   getRecord(userId: string, recordId: string): Promise<SuiteRecord | undefined>;
+  findCommandReceipt(userId: string, input: { recordType: SuiteCommandReceiptRecordType; moduleId: string; actionId: string; idempotencyKey: string }): Promise<SuiteRecord | undefined>;
+  findApprovalDecisionReceipt(userId: string, decisionId: string): Promise<SuiteRecord | undefined>;
   createRecord(userId: string, input: { moduleId: string; recordType: string; title: string; state?: string; data?: Record<string, unknown> }): Promise<SuiteRecord | undefined>;
   createPublicRecord(workspaceSlug: string, input: { id?: string; moduleId: string; recordType: string; title: string; state?: string; data?: Record<string, unknown> }): Promise<SuiteRecord | undefined>;
   listPublicRecords(workspaceSlug: string, input: { moduleId: string; recordType?: string; limit: number }): Promise<SuiteRecord[]>;
@@ -92,6 +160,31 @@ export interface SuiteStore {
   findApiTokenPrincipal(token: string): Promise<SuiteApiTokenPrincipal | undefined>;
   hostnameRegistry?: MemoryHostnameClaimRegistry;
   attachHostnameRegistry?(hostnameRegistry: MemoryHostnameClaimRegistry): void;
+}
+
+export const suiteCommandReceiptRecordTypes = [
+  "command-receipt",
+  "premium-command-receipt",
+  "growth-command-receipt",
+  "esign-command-receipt",
+  "email-command-receipt",
+  "additive-command-receipt",
+  "extended-business-command-receipt",
+] as const;
+export type SuiteCommandReceiptRecordType = typeof suiteCommandReceiptRecordTypes[number];
+const suiteCommandReceiptRecordTypeSet = new Set<string>(suiteCommandReceiptRecordTypes);
+
+function commandReceiptLookupInput(input: { recordType: string; moduleId: string; actionId: string; idempotencyKey: string }) {
+  if (!suiteCommandReceiptRecordTypeSet.has(input.recordType)
+    || !input.moduleId.trim()
+    || !input.actionId.trim()
+    || !input.idempotencyKey.trim()) throw new Error("The command receipt lookup is invalid.");
+  return input;
+}
+
+function approvalDecisionLookupValue(decisionId: string) {
+  if (!/^[A-Za-z0-9._:-]{16,200}$/.test(decisionId)) throw new Error("The approval decision lookup is invalid.");
+  return decisionId;
 }
 
 export interface SuiteCustomDomain {
@@ -114,7 +207,7 @@ export class MemorySuiteStore implements SuiteStore {
   private actions = new Map<string, SuiteAiAction>();
   private tokens = new Map<string, SuiteApiTokenSummary & { userId: string }>();
   private customDomains = new Map<string, SuiteCustomDomain>();
-  private transactionLocks = new Map<string, Promise<void>>();
+  private transactionTail: Promise<void> = Promise.resolve();
   private transactionContext = new AsyncLocalStorage<string>();
   hostnameRegistry: MemoryHostnameClaimRegistry;
 
@@ -135,29 +228,49 @@ export class MemorySuiteStore implements SuiteStore {
   async initialize() {}
 
   async runInWorkspaceTransaction<T>(userId: string, operation: (workspace: SuiteWorkspace) => Promise<T>): Promise<T> {
-    const initial = await this.getOrCreateWorkspace(userId);
     const activeWorkspaceId = this.transactionContext.getStore();
     if (activeWorkspaceId) {
-      if (activeWorkspaceId !== initial.id) {
+      const existing = this.baseWorkspace(userId);
+      if (!existing || activeWorkspaceId !== existing.id) {
         throw new Error("A workspace transaction cannot cross tenant boundaries.");
       }
-      return operation(initial);
+      return operation(this.workspaceFor(userId, existing));
     }
-    const previous = this.transactionLocks.get(initial.id) ?? Promise.resolve();
+    const previous = this.transactionTail;
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const tail = previous.then(() => gate);
-    this.transactionLocks.set(initial.id, tail);
+    this.transactionTail = tail;
     await previous;
+    const snapshot = {
+      workspaces: structuredClone(this.workspaces),
+      memberships: structuredClone(this.memberships),
+      records: structuredClone(this.records),
+      actions: structuredClone(this.actions),
+      tokens: structuredClone(this.tokens),
+      customDomains: structuredClone(this.customDomains),
+      hostnameClaims: this.hostnameRegistry.snapshot(),
+    };
     try {
+      const initial = await this.getOrCreateWorkspace(userId);
       return await this.transactionContext.run(
         initial.id,
         () => operation(initial),
       );
     }
+    catch (error) {
+      this.workspaces = snapshot.workspaces;
+      this.memberships = snapshot.memberships;
+      this.records = snapshot.records;
+      this.actions = snapshot.actions;
+      this.tokens = snapshot.tokens;
+      this.customDomains = snapshot.customDomains;
+      this.hostnameRegistry.restore(snapshot.hostnameClaims);
+      throw error;
+    }
     finally {
       release();
-      if (this.transactionLocks.get(initial.id) === tail) this.transactionLocks.delete(initial.id);
+      if (this.transactionTail === tail) this.transactionTail = Promise.resolve();
     }
   }
 
@@ -310,9 +423,12 @@ export class MemorySuiteStore implements SuiteStore {
 
   async listRecords(userId: string, input: { moduleId?: string; recordType?: string; limit: number }) {
     const workspace = await this.getOrCreateWorkspace(userId);
+    const role = this.memberships.get(userId)?.role;
+    const trustedTransaction = this.transactionContext.getStore() === workspace.id;
     return [...this.records.values()]
       .filter((record) => record.workspaceId === workspace.id && (!input.moduleId || record.moduleId === input.moduleId) && (!input.recordType || record.recordType === input.recordType))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .filter((record) => trustedTransaction || Boolean(role && canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record)))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .slice(0, input.limit);
   }
 
@@ -326,7 +442,30 @@ export class MemorySuiteStore implements SuiteStore {
   async getRecord(userId: string, recordId: string) {
     const workspace = await this.getOrCreateWorkspace(userId);
     const record = this.records.get(recordId);
-    return record?.workspaceId === workspace.id ? record : undefined;
+    if (!record || record.workspaceId !== workspace.id) return undefined;
+    if (this.transactionContext.getStore() === workspace.id) return record;
+    const role = this.memberships.get(userId)?.role;
+    return role && canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record) ? record : undefined;
+  }
+
+  async findCommandReceipt(userId: string, input: { recordType: SuiteCommandReceiptRecordType; moduleId: string; actionId: string; idempotencyKey: string }) {
+    commandReceiptLookupInput(input);
+    const workspace = await this.getOrCreateWorkspace(userId);
+    const matches = [...this.records.values()].filter((record) => record.workspaceId === workspace.id
+      && record.recordType === input.recordType
+      && record.moduleId === input.moduleId
+      && record.data.actionId === input.actionId
+      && record.data.idempotencyKey === input.idempotencyKey);
+    if (matches.length > 1) throw new Error("The workspace contains duplicate command idempotency receipts.");
+    return matches[0];
+  }
+
+  async findApprovalDecisionReceipt(userId: string, decisionId: string) {
+    approvalDecisionLookupValue(decisionId);
+    const workspace = await this.getOrCreateWorkspace(userId);
+    return [...this.records.values()].find((record) => record.workspaceId === workspace.id
+      && suiteCommandReceiptRecordTypeSet.has(record.recordType)
+      && record.data.approvalDecisionId === decisionId);
   }
 
   async createRecord(userId: string, input: { moduleId: string; recordType: string; title: string; state?: string; data?: Record<string, unknown> }) {
@@ -422,11 +561,12 @@ export class MemorySuiteStore implements SuiteStore {
   async queueAiAction(userId: string, input: { moduleId: string; goal: string; context?: Record<string, unknown> }) {
     const workspace = await this.getOrCreateWorkspace(userId);
     if (!this.roleCanWrite(userId) || !workspace.enabledModuleIds.includes(input.moduleId) || !planAllows(workspace.plan, input.moduleId)) return undefined;
-    recordPayloadBytes(input.context);
+    const context = { ...(input.context ?? {}), requestedByUserId: userId };
+    recordPayloadBytes(context);
     const usage = await this.getUsage(userId);
     if (usage.aiActionsThisMonth >= usage.aiActionLimit) throw new Error("This workspace reached its monthly AI action quota. Upgrade the server plan or wait for the next billing month.");
     const createdAt = now();
-    const action: SuiteAiAction = { id: randomUUID(), workspaceId: workspace.id, moduleId: input.moduleId, goal: input.goal, context: input.context ?? {}, status: "queued", createdAt, updatedAt: createdAt };
+    const action: SuiteAiAction = { id: randomUUID(), workspaceId: workspace.id, moduleId: input.moduleId, goal: input.goal, context, status: "queued", createdAt, updatedAt: createdAt };
     this.actions.set(action.id, action);
     return action;
   }
@@ -434,7 +574,10 @@ export class MemorySuiteStore implements SuiteStore {
   async getAiAction(userId: string, actionId: string) {
     const workspace = await this.getOrCreateWorkspace(userId);
     const action = this.actions.get(actionId);
-    return action?.workspaceId === workspace.id ? action : undefined;
+    if (!action || action.workspaceId !== workspace.id) return undefined;
+    if (this.transactionContext.getStore() === workspace.id) return action;
+    const role = this.memberships.get(userId)?.role;
+    return role === "owner" || role === "admin" || action.context.requestedByUserId === userId ? action : undefined;
   }
 
   async claimAiAction() {
@@ -463,19 +606,67 @@ export class MemorySuiteStore implements SuiteStore {
     action.attempts = (action.attempts ?? 0) + 1;
     action.leaseExpiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
     action.updatedAt = now();
-    const allowedModules = new Set(suiteAiReadScopes(action.moduleId));
     const selectedIds = aiSelectedRecordIds(action.context);
+    const allowedModules = new Set(suiteAiReadScopes(action.moduleId, { explicitSelection: selectedIds.length > 0 }));
     const selected = new Set(selectedIds);
     const records = [...this.records.values()]
       .filter((record) => record.workspaceId === action.workspaceId && allowedModules.has(record.moduleId) && (!selected.size || selected.has(record.id)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, selected.size ? 1_000 : 100);
-    return { action, records };
+    const bindings = assistantEvidenceBindings(action);
+    if (bindings.length) {
+      const actionWorkspace = [...this.workspaces.values()].find((workspace) => workspace.id === action.workspaceId);
+      const evidenceIds = new Set(Array.isArray(action.context.evidenceIds) ? action.context.evidenceIds.filter((value): value is string => typeof value === "string") : []);
+      for (const binding of bindings) {
+        const attachment = this.records.get(binding.attachmentRecordId);
+        if (!attachment || attachment.workspaceId !== action.workspaceId || !assistantAttachmentMatches(binding, attachment)) continue;
+        const source = this.records.get(binding.sourceRecordId);
+        if (!source || source.workspaceId !== action.workspaceId || !actionWorkspace?.enabledModuleIds.includes(source.moduleId) || !assistantSourceMatches(binding, source, evidenceIds)) continue;
+        records.push(attachment, source);
+      }
+    }
+    const requestedByUserId = typeof action.context.requestedByUserId === "string" ? action.context.requestedByUserId : undefined;
+    const requesterWorkspace = requestedByUserId ? this.baseWorkspace(requestedByUserId) : undefined;
+    const requesterRole = requestedByUserId ? this.memberships.get(requestedByUserId)?.role : undefined;
+    const exactRecords = [...new Map(records.map((record) => [record.id, record])).values()]
+      .filter((record) => Boolean(requestedByUserId && requesterRole && requesterWorkspace?.id === action.workspaceId && canReadSuiteRecord({ userId: requestedByUserId, workspaceId: action.workspaceId, role: requesterRole }, record)))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 1_000);
+    return { action, records: exactRecords };
   }
 
   async completeAiAction(actionId: string, result: { status: "completed" | "failed"; result: Record<string, unknown> }) {
     const action = this.actions.get(actionId);
     if (!action || action.status !== "running") return false;
+    const contractVersion = action.context.resultContract && typeof action.context.resultContract === "object" && !Array.isArray(action.context.resultContract)
+      ? (action.context.resultContract as Record<string, unknown>).version
+      : undefined;
+    if (contractVersion === "additive-business-proposal.v1" || contractVersion === "extended-business-proposal.v1") {
+      const workspace = [...this.workspaces.values()].find((candidate) => candidate.id === action.workspaceId);
+      if (!workspace) throw new Error("Proposal-only AI workspace missing.");
+      return this.runInWorkspaceTransaction(workspace.userId, async () => {
+        const currentAction = this.actions.get(actionId);
+        if (!currentAction || currentAction.status !== "running") return false;
+        const auditId = contractVersion === "additive-business-proposal.v1" ? currentAction.context.requestRecordId : currentAction.context.aiAuditRecordId;
+        const auditRecord = typeof auditId === "string" ? this.records.get(auditId) : undefined;
+        if (!auditRecord) throw new Error("The proposal-only audit record is missing.");
+        const selectedRecords = aiSelectedRecordIds(currentAction.context).flatMap((recordId) => {
+          const record = this.records.get(recordId);
+          return record ? [record] : [];
+        });
+        if (result.status === "completed") validateProposalOnlyAiJob(currentAction, selectedRecords, config.AI_MODEL);
+        const transitionedAt = now();
+        const transitionedAudit = transitionProposalOnlyAiAuditRecord(currentAction, selectedRecords, result, transitionedAt);
+        recordPayloadBytes(transitionedAudit.data);
+        currentAction.status = result.status;
+        currentAction.result = result.result;
+        currentAction.lastError = result.status === "failed" && typeof result.result.error === "string" ? result.result.error : undefined;
+        currentAction.leaseExpiresAt = undefined;
+        currentAction.updatedAt = transitionedAt;
+        this.records.set(transitionedAudit.id, transitionedAudit);
+        return true;
+      });
+    }
     action.status = result.status;
     action.result = result.result;
     action.lastError = result.status === "failed" && typeof result.result.error === "string" ? result.result.error : undefined;
@@ -776,12 +967,45 @@ export class PostgresSuiteStore implements SuiteStore {
 
   async listRecords(userId: string, input: { moduleId?: string; recordType?: string; limit: number }) {
     return this.withUserWorkspace(userId, async (client, workspace) => {
-      const values: unknown[] = [workspace.id, input.limit];
-      const filters = ["r.workspace_id=$1"];
-      if (input.moduleId) { values.push(input.moduleId); filters.push(`r.module_id=$${values.length}`); }
-      if (input.recordType) { values.push(input.recordType); filters.push(`r.record_type=$${values.length}`); }
-      const result = await client.query(`SELECT r.* FROM suite_records r WHERE ${filters.join(" AND ")} ORDER BY r.updated_at DESC LIMIT $2`, values);
-      return result.rows.map((row) => this.record(row));
+      if (input.limit <= 0) return [];
+      const trustedTransaction = Boolean(this.transactionContext.getStore());
+      const role = workspace.currentRole;
+      if (trustedTransaction || role === "owner" || role === "admin") {
+        const values: unknown[] = [workspace.id, input.limit];
+        const filters = ["r.workspace_id=$1"];
+        if (input.moduleId) { values.push(input.moduleId); filters.push(`r.module_id=$${values.length}`); }
+        if (input.recordType) { values.push(input.recordType); filters.push(`r.record_type=$${values.length}`); }
+        const result = await client.query(`SELECT r.* FROM suite_records r WHERE ${filters.join(" AND ")} ORDER BY r.updated_at DESC,r.id DESC LIMIT $2`, values);
+        return result.rows.map((row) => this.record(row));
+      }
+      if (!role) return [];
+
+      const visible: SuiteRecord[] = [];
+      const pageSize = Math.min(500, Math.max(100, input.limit));
+      let cursor: { updatedAt: unknown; id: string } | undefined;
+      while (visible.length < input.limit) {
+        const values: unknown[] = [workspace.id, pageSize];
+        const filters = ["r.workspace_id=$1"];
+        if (input.moduleId) { values.push(input.moduleId); filters.push(`r.module_id=$${values.length}`); }
+        if (input.recordType) { values.push(input.recordType); filters.push(`r.record_type=$${values.length}`); }
+        if (cursor) {
+          values.push(cursor.updatedAt);
+          const updatedAtParameter = values.length;
+          values.push(cursor.id);
+          filters.push(`(r.updated_at<$${updatedAtParameter}::TIMESTAMPTZ OR (r.updated_at=$${updatedAtParameter}::TIMESTAMPTZ AND r.id<$${values.length}::UUID))`);
+        }
+        const page = await client.query(`SELECT r.* FROM suite_records r WHERE ${filters.join(" AND ")} ORDER BY r.updated_at DESC,r.id DESC LIMIT $2`, values);
+        if (!page.rows.length) break;
+        for (const row of page.rows) {
+          const record = this.record(row);
+          if (canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record)) visible.push(record);
+          if (visible.length === input.limit) break;
+        }
+        if (page.rows.length < pageSize || visible.length === input.limit) break;
+        const last = page.rows.at(-1)!;
+        cursor = { updatedAt: last.updated_at, id: String(last.id) };
+      }
+      return visible;
     });
   }
 
@@ -796,6 +1020,27 @@ export class PostgresSuiteStore implements SuiteStore {
   async getRecord(userId: string, recordId: string) {
     return this.withUserWorkspace(userId, async (client, workspace) => {
       const result = await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND id=$2", [workspace.id, recordId]);
+      if (!result.rows[0]) return undefined;
+      const record = this.record(result.rows[0]);
+      if (this.transactionContext.getStore()) return record;
+      const role = workspace.currentRole;
+      return role && canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record) ? record : undefined;
+    });
+  }
+
+  async findCommandReceipt(userId: string, input: { recordType: SuiteCommandReceiptRecordType; moduleId: string; actionId: string; idempotencyKey: string }) {
+    commandReceiptLookupInput(input);
+    return this.withUserWorkspace(userId, async (client, workspace) => {
+      const result = await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND record_type=$2 AND module_id=$3 AND data->>'actionId'=$4 AND data->>'idempotencyKey'=$5 LIMIT 2", [workspace.id, input.recordType, input.moduleId, input.actionId, input.idempotencyKey]);
+      if (result.rows.length > 1) throw new Error("The workspace contains duplicate command idempotency receipts.");
+      return result.rows[0] ? this.record(result.rows[0]) : undefined;
+    });
+  }
+
+  async findApprovalDecisionReceipt(userId: string, decisionId: string) {
+    approvalDecisionLookupValue(decisionId);
+    return this.withUserWorkspace(userId, async (client, workspace) => {
+      const result = await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND record_type=ANY($2::TEXT[]) AND data->>'approvalDecisionId'=$3 ORDER BY updated_at DESC,id DESC LIMIT 1", [workspace.id, suiteCommandReceiptRecordTypes, decisionId]);
       return result.rows[0] ? this.record(result.rows[0]) : undefined;
     });
   }
@@ -896,14 +1141,15 @@ export class PostgresSuiteStore implements SuiteStore {
   }
 
   async queueAiAction(userId: string, input: { moduleId: string; goal: string; context?: Record<string, unknown> }) {
-    recordPayloadBytes(input.context);
+    const context = { ...(input.context ?? {}), requestedByUserId: userId };
+    recordPayloadBytes(context);
     return this.withUserWorkspace(userId, async (client, workspace) => {
       if (!canWriteRole(workspace.currentRole) || !workspace.enabledModuleIds.includes(input.moduleId) || !planAllows(workspace.plan, input.moduleId)) return undefined;
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [workspace.id]);
       const count = await client.query("SELECT COUNT(*)::BIGINT AS action_count FROM suite_ai_actions WHERE workspace_id=$1 AND created_at>=date_trunc('month',NOW())", [workspace.id]);
       if (Number(count.rows[0].action_count) >= quotaForPlan(workspace.plan).aiActionLimit) throw new Error("This workspace reached its monthly AI action quota. Upgrade the server plan or wait for the next billing month.");
       const id = randomUUID();
-      const result = await client.query("INSERT INTO suite_ai_actions(id,workspace_id,module_id,goal,context) VALUES($1,$2,$3,$4,$5) RETURNING *", [id, workspace.id, input.moduleId, input.goal, JSON.stringify(input.context ?? {})]);
+      const result = await client.query("INSERT INTO suite_ai_actions(id,workspace_id,module_id,goal,context) VALUES($1,$2,$3,$4,$5) RETURNING *", [id, workspace.id, input.moduleId, input.goal, JSON.stringify(context)]);
       return this.aiAction(result.rows[0]);
     });
   }
@@ -915,7 +1161,10 @@ export class PostgresSuiteStore implements SuiteStore {
   async getAiAction(userId: string, actionId: string) {
     return this.withUserWorkspace(userId, async (client, workspace) => {
       const result = await client.query("SELECT * FROM suite_ai_actions WHERE workspace_id=$1 AND id=$2", [workspace.id, actionId]);
-      return result.rows[0] ? this.aiAction(result.rows[0]) : undefined;
+      if (!result.rows[0]) return undefined;
+      const action = this.aiAction(result.rows[0]);
+      if (this.transactionContext.getStore()) return action;
+      return workspace.currentRole === "owner" || workspace.currentRole === "admin" || action.context.requestedByUserId === userId ? action : undefined;
     });
   }
 
@@ -930,19 +1179,47 @@ export class PostgresSuiteStore implements SuiteStore {
       const row = result.rows[0];
       await this.setWorkspaceContext(client, String(row.workspace_id));
       const action = this.aiAction(row);
+      const requester = await client.query("SELECT requested_by_user_id,requested_by_role FROM managed_oss_ai_action_requester_principal($1)", [action.id]);
+      const requestedByUserId = requester.rows[0]?.requested_by_user_id ? String(requester.rows[0].requested_by_user_id) : undefined;
+      const requesterRole = requester.rows[0]?.requested_by_role as SuiteWorkspaceRole | undefined;
       const selectedIds = aiSelectedRecordIds(action.context);
+      const allowedModules = suiteAiReadScopes(String(row.module_id), { explicitSelection: selectedIds.length > 0 });
       const records = selectedIds.length
-        ? await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND module_id=ANY($2::TEXT[]) AND id=ANY($3::UUID[]) ORDER BY updated_at DESC LIMIT 1000", [row.workspace_id, suiteAiReadScopes(String(row.module_id)), selectedIds])
-        : await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND module_id=ANY($2::TEXT[]) ORDER BY updated_at DESC LIMIT 100", [row.workspace_id, suiteAiReadScopes(String(row.module_id))]);
+        ? await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND module_id=ANY($2::TEXT[]) AND id=ANY($3::UUID[]) ORDER BY updated_at DESC LIMIT 1000", [row.workspace_id, allowedModules, selectedIds])
+        : await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND module_id=ANY($2::TEXT[]) ORDER BY updated_at DESC LIMIT 100", [row.workspace_id, allowedModules]);
+      const claimedRecords = records.rows.map((record) => this.record(record));
+      const bindings = assistantEvidenceBindings(action);
+      if (bindings.length) {
+        const attachmentIds = [...new Set(bindings.map((binding) => binding.attachmentRecordId))];
+        const attachmentResult = await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND module_id='assistant' AND record_type='source-attachment' AND id=ANY($2::UUID[])", [row.workspace_id, attachmentIds]);
+        const attachments = attachmentResult.rows.map((record) => this.record(record));
+        const evidenceIds = new Set(Array.isArray(action.context.evidenceIds) ? action.context.evidenceIds.filter((value): value is string => typeof value === "string") : []);
+        const authorizedBindings = bindings.filter((binding) => attachments.some((attachment) => assistantAttachmentMatches(binding, attachment)) && evidenceIds.has(binding.sourceRecordId));
+        if (authorizedBindings.length) {
+          const sourceIds = [...new Set(authorizedBindings.map((binding) => binding.sourceRecordId))];
+          const sourceResult = await client.query("SELECT * FROM suite_records WHERE workspace_id=$1 AND id=ANY($2::UUID[])", [row.workspace_id, sourceIds]);
+          const sources = sourceResult.rows.map((record) => this.record(record));
+          for (const binding of authorizedBindings) {
+            const attachment = attachments.find((candidate) => assistantAttachmentMatches(binding, candidate));
+            const source = sources.find((candidate) => assistantSourceMatches(binding, candidate, evidenceIds));
+            if (attachment && source) claimedRecords.push(attachment, source);
+          }
+        }
+      }
       await client.query("COMMIT");
-      return { action, records: records.rows.map((record) => this.record(record)) };
+      return {
+        action,
+        records: [...new Map(claimedRecords.map((record) => [record.id, record])).values()]
+          .filter((record) => Boolean(requestedByUserId && requesterRole && canReadSuiteRecord({ userId: requestedByUserId, workspaceId: action.workspaceId, role: requesterRole }, record)))
+          .slice(0, 1_000),
+      };
     } catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
   }
 
   async completeAiAction(actionId: string, result: { status: "completed" | "failed"; result: Record<string, unknown> }) {
     return this.transaction(async (client) => {
-      const updated = await client.query("SELECT managed_oss_complete_suite_ai_action_v3($1,$2,$3,$4) completed", [actionId, result.status, JSON.stringify(result.result), result.status === "failed" && typeof result.result.error === "string" ? result.result.error : null]);
+      const updated = await client.query("SELECT managed_oss_complete_suite_ai_action_v4($1,$2,$3,$4) completed", [actionId, result.status, JSON.stringify(result.result), result.status === "failed" && typeof result.result.error === "string" ? result.result.error : null]);
       return updated.rows[0]?.completed === true;
     });
   }
