@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "releaseVersion": "v0.4.2",
+  "sourceCommit": "20c4a704c77cbbbff1da995e1d91b937625a8aa4",
+  "controlPlaneImage": "ghcr.io/rohanarun/managed-oss-cloud@sha256:2a32801db1aa72a358527370549d66fb300b57e55e93743917b1b9f0b9ad55d3",
+  "controlRuntime": {
+    "PUBLIC_APP_URL": "https://cloud.getsupers.com",
+    "PUBLIC_HOST_TARGET": "apps.getsupers.com",
+    "PROVISIONING_MODE": "dry-run",
+    "PROVISIONING_WORKER": "disabled",
+    "DATABASE_MIGRATION_MODE": "manual",
+    "SUITE_ENTITLEMENT_MODE": "hosted",
+    "HOSTING_ENTITLEMENT_MODE": "hosted",
+    "WORKER_STORAGE_QUOTA_BACKEND": "measurement-only",
+    "WORKER_STORAGE_QUOTA_PROOF_COMPLETED": "false",
+    "SUBSCRIPTION_RECONCILIATION_MODE": "disabled",
+    "SUBSCRIPTION_RECONCILIATION_INTERVAL_MILLISECONDS": "900000",
+    "COMPOSE_PROFILES": "",
+    "CONTROL_PLANE_DOMAIN": "cloud.getsupers.com",
+    "PLATFORM_IPV4": "34.44.230.152"
+  },
+  "billingRuntime": {
+    "STRIPE_SECRET_KEY": "",
+    "STRIPE_WEBHOOK_SECRET": "",
+    "BILLING_MODE": "disabled"
+  },
+  "controlSecretVersions": {
+    "extendedExternalEvidenceHmac": "1"
+  },
+  "assetSha256": {
+    "deploy/google-cloud/docker-compose.yml": "1276de2f166b1f291ca773413def724938554f06741a31f2f333f2dfd27a096e",
+    "deploy/google-cloud/Caddyfile": "0630cbdca2b9e23dd5fbe6f31d070432dde5971aa7ad7c4c1f9921bea8b30f77",
+    "deploy/google-cloud/rollout-control-plane.sh": "ddba6c4d73a29e25a5fbbd9daf7fbec9abb5656e67a9a2c33760b021eb0ed9a1",
+    "deploy/google-cloud/provenance/verify-control-plane-image.sh": "948956785c7cf3fdb79195cf5e1a570890670ed437473a280529d517270706e8",
+    "deploy/google-cloud/readiness/control-plane-ready.sh": "0fc7ae5475cf698039279136cd1db703f7d0aebdecd0d29e5cc4bb168a0d7867",
+    "deploy/google-cloud/reboot/assert-subscription-reconciler-absent.sh": "59e9f6af0bcca4aad2ce866cdaf68a68115328e813908923382c64290ae4fdf1",
+    "deploy/google-cloud/database/configure-role-logins.sh": "8c6448d6656ee141e9c55509ac5faa1d58ea1a3e8bc2e59b049f262ecd8355ca",
+    "deploy/google-cloud/database/preflight-migration-018-domain-identities.sql": "1216292778cf062b185be8a9c286ad3e7564edaaf01fac2b5783178e46c19fe7",
+    "deploy/google-cloud/worker/metadata-firewall.sh": "8823fdf764e4ee499dd8a7b4f586ae62d259eeaf4bc18caacd0f003d5f93e489",
+    "deploy/google-cloud/metadata-firewall-proof.sh": "a4852668b5f2ece0c76a790c93112fa6ab16d4bd517f3630a84640fcd33a9528",
+    "deploy/google-cloud/worker/managed-oss-metadata-firewall.service": "b42d54ce5813fdaa34a505f880cd7bcdce5466537968bb7c21838b96103be68f",
+    "deploy/google-cloud/worker/docker-metadata-firewall.conf": "14b7d13ce3b95131880f42c3fafdf4090d0601e43d50a54dfb27bd941bf19afb"
+  }
+}

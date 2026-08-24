@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+set +x
+
+readonly EXPECTED_PROJECT='@@PROJECT@@'
+readonly EXPECTED_INSTANCE='@@INSTANCE@@'
+readonly EXPECTED_MACHINE_TYPE='@@MACHINE_TYPE@@'
+readonly EXPECTED_RELEASE='v0.4.2'
+readonly EXPECTED_RELEASE_MANIFEST_SHA256='@@RELEASE_MANIFEST_SHA256@@'
+readonly EXPECTED_REAPPLY_SHA256='@@REAPPLY_SHA256@@'
+readonly HMAC_SECRET_NAME='@@HMAC_SECRET_NAME@@'
+readonly RELEASE_DIR="/opt/managed-oss/releases/${EXPECTED_RELEASE}"
+
+metadata() {
+  curl -fsS -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"
+}
+
+[[ "$(metadata project/project-id)" == "$EXPECTED_PROJECT" ]]
+[[ "$(metadata instance/name)" == "$EXPECTED_INSTANCE" ]]
+machine_type="$(metadata instance/machine-type)"
+[[ "${machine_type##*/}" == "$EXPECTED_MACHINE_TYPE" ]]
+[[ -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" && "$(stat -c '%u' "$RELEASE_DIR")" == "0" ]]
+[[ -f "$RELEASE_DIR/deploy/google-cloud/reboot/release-v0.4.2.json" && ! -L "$RELEASE_DIR/deploy/google-cloud/reboot/release-v0.4.2.json" ]]
+[[ "$(stat -c '%u' "$RELEASE_DIR/deploy/google-cloud/reboot/release-v0.4.2.json")" == "0" ]]
+[[ "$(sha256sum "$RELEASE_DIR/deploy/google-cloud/reboot/release-v0.4.2.json" | awk '{print $1}')" == "$EXPECTED_RELEASE_MANIFEST_SHA256" ]]
+[[ -x "$RELEASE_DIR/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh" && ! -L "$RELEASE_DIR/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh" ]]
+[[ "$(stat -c '%u' "$RELEASE_DIR/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh")" == "0" ]]
+[[ "$(sha256sum "$RELEASE_DIR/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh" | awk '{print $1}')" == "$EXPECTED_REAPPLY_SHA256" ]]
+
+exec "$RELEASE_DIR/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh" \
+  --project "$EXPECTED_PROJECT" \
+  --instance "$EXPECTED_INSTANCE" \
+  --machine-type "$EXPECTED_MACHINE_TYPE" \
+  --hmac-secret-name "$HMAC_SECRET_NAME" \
+  --release-dir "$RELEASE_DIR"

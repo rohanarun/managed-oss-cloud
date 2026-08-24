@@ -30,6 +30,55 @@ The control startup script resolves the named HMAC secret through the instance s
 
 The worker helper refuses any release directory other than `/opt/managed-oss/releases/v0.4.1`, verifies every root-owned release asset, requires the running agent to use the exact pinned image during preflight, verifies SLSA provenance before pulling at boot, reruns the bridge metadata-isolation proof, and finishes through the normal worker readiness gate. It does not alter the control-host startup contract.
 
+## Control-plane v0.4.2 schema release
+
+The v0.4.2 control-plane release is intentionally separate from the worker hotfix:
+
+- `release-v0.4.2.json` pins source commit `20c4a704c77cbbbff1da995e1d91b937625a8aa4` and image digest `sha256:2a32801db1aa72a358527370549d66fb300b57e55e93743917b1b9f0b9ad55d3`;
+- the reviewed manifest SHA-256 is `2d34489579f275b15fa86e17ac13eac74ca54a874095e0aa50e479a609403e9b`, the reapply-helper SHA-256 is `6e83f6a41dc49452e71800601a0e39dfb6f2a8990b47bf7b95c9c9e8be42e101`, and the startup-template SHA-256 is `02a6bfed1d9d5f0dc730c68b69a797ce8390e248e4a430aeeae4eaa3dde019af`;
+- its runtime contract keeps provisioning in `dry-run`, the provisioning worker disabled, both entitlement modes hosted, storage accounting measurement-only, subscription reconciliation disabled, Compose profiles empty, Stripe secrets empty, and billing disabled;
+- `reapply-control-plane-v0.4.2.sh` accepts only `/opt/managed-oss/releases/v0.4.2`, verifies every pinned release asset, preserves only the existing Stripe publishable key, reloads the control-only HMAC secret, and invokes the provenance-gated rollout;
+- `startup-control-plane-v0.4.2.sh.in` pins the complete manifest and reapply-helper hashes in the rendered startup metadata; and
+- `update-existing-control-startup-v0.4.2.sh` replaces exactly the existing `startup-script` key on `managed-oss-host`. It has no worker argument or worker mutation path.
+
+Do not reuse `update-existing-startup-metadata.sh` for this upgrade. That tool is the original v0.4.0 two-instance transition: it requires an absent control startup key and writes worker startup metadata. The live worker must remain on its independent v0.4.1 reboot contract.
+
+The initial v0.4.2 rollout must complete before the startup-metadata updater can pass its remote preflight. Use this order:
+
+1. Confirm the successful tag workflow used the exact source commit and digest above, and confirm the control host has GitHub CLI 2.97.0 or newer.
+2. Stage the reviewed tooling checkout as the root-owned, non-symlink directory `/opt/managed-oss/releases/v0.4.2`. Verify the manifest, reapply helper, and startup template against the exact hashes above, then verify every manifest `assetSha256` entry before changing runtime state.
+3. Snapshot the control and worker instance descriptions privately. Verify the worker is still `managed-oss-host-worker-0`, has no public IP, and its startup metadata and running agent remain pinned to v0.4.1. No subsequent v0.4.2 command targets that instance.
+4. On the control host, change only `CONTROL_PLANE_IMAGE` in the root-owned `/opt/managed-oss/config/runtime.env` to the exact v0.4.2 digest. Before rollout, prove `PROVISIONING_MODE=dry-run`, `PROVISIONING_WORKER=disabled`, `SUBSCRIPTION_RECONCILIATION_MODE=disabled`, `COMPOSE_PROFILES=` and `BILLING_MODE=disabled`, with empty Stripe secret and webhook values.
+5. Run the staged v0.4.2 control helper on the control host. It rechecks every safe mode, refuses a running subscription reconciler, reloads the control-only HMAC secret, and invokes the provenance-gated rollout with the pinned source commit:
+
+   ```bash
+   sudo /opt/managed-oss/releases/v0.4.2/deploy/google-cloud/reboot/reapply-control-plane-v0.4.2.sh \
+     --project local-passage-501917-g0 \
+     --instance managed-oss-host \
+     --machine-type e2-medium \
+     --hmac-secret-name managed-oss-extended-external-evidence-hmac \
+     --release-dir /opt/managed-oss/releases/v0.4.2
+   ```
+
+6. Verify the exact control image, PostgreSQL-backed health with `mode: "dry-run"`, `/api/config` with `billingReady: false`, no running subscription reconciler, and a fresh host-ready marker.
+7. From the trusted local checkout, run the control-only metadata dry run with a new private snapshot directory:
+
+   ```bash
+   deploy/google-cloud/reboot/update-existing-control-startup-v0.4.2.sh --dry-run \
+     --project local-passage-501917-g0 \
+     --zone us-central1-a \
+     --control-instance managed-oss-host \
+     --control-machine-type e2-medium \
+     --control-service-account managed-oss-host@local-passage-501917-g0.iam.gserviceaccount.com \
+     --hmac-secret-name managed-oss-extended-external-evidence-hmac \
+     --snapshot-dir /absolute/private/path/managed-oss-control-v0.4.2-dry-run
+   ```
+
+8. Review the emitted hashes and `mutationScope: "control-startup-script-only"`. Repeat the same command with `--apply` and a second new snapshot directory. The apply path performs one `gcloud compute instances add-metadata` call for `managed-oss-host`, then proves every non-startup metadata item is unchanged.
+9. Re-describe both instances. Prove the control startup script is the planned v0.4.2 hash and the worker description, v0.4.1 startup script, image, private networking, and heartbeat are unchanged. A reboot test is a separate maintenance-window action; reboot only the control host after explicit approval, then repeat the health and safe-mode checks.
+
+The updater fails closed if the control host does not already have exactly one startup script, if it is neither the reviewed v0.4.0 predecessor nor the exact rendered v0.4.2 script, if runtime state is not already healthy on v0.4.2, or if the metadata fingerprint changes between snapshot and apply.
+
 ## First dry run
 
 Use a new absolute snapshot directory. The current reviewed topology is in `us-central1-a`: an `e2-medium` control host and an `e2-standard-2` private worker.
@@ -65,6 +114,7 @@ Do not run `terraform apply`, import unmanaged resources, or reconstruct state a
 ```bash
 bash deploy/google-cloud/reboot/tests/verify-existing-startup-metadata.sh
 bash deploy/google-cloud/reboot/tests/verify-worker-hotfix-v0.4.1.sh
+bash deploy/google-cloud/reboot/tests/verify-control-plane-v0.4.2.sh
 ```
 
-The existing-instance test suite uses a fake `gcloud` executable. It proves the absent-control/existing-worker transitions, dry-run non-mutation, exact two-key apply behavior, preservation of `enable-oslogin`, private snapshots, HMAC isolation, and refusal on transition or machine drift. The v0.4.1 worker test independently verifies the pinned commit and image, every asset digest, startup-template hashes, HMAC absence, provenance-before-pull ordering, metadata isolation, and readiness. Neither test makes Google Cloud calls.
+The existing-instance test suite uses a fake `gcloud` executable. It proves the absent-control/existing-worker transitions, dry-run non-mutation, exact two-key apply behavior, preservation of `enable-oslogin`, private snapshots, HMAC isolation, and refusal on transition or machine drift. The v0.4.1 worker test independently verifies the pinned commit and image, every asset digest, startup-template hashes, HMAC absence, provenance-before-pull ordering, metadata isolation, and readiness. The v0.4.2 control test proves the exact release contract, safe modes, dry-run non-mutation, a single control-only metadata merge, preservation of all other control metadata, manifest-drift refusal, and rejection of absent or unexpected predecessor scripts. None of these tests makes Google Cloud calls.
