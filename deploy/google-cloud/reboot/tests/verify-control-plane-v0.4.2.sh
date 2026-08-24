@@ -85,7 +85,7 @@ printf '%s\n' \
   'esac' >"$guard_mock"
 chmod 0755 "$guard_mock"
 guard_output="$(DOCKER_BIN="$guard_mock" MOCK_RECONCILER_STATE=absent "$reconciler_guard")"
-jq -e '.ok == true and .subscriptionReconcilerAbsent == true' <<<"$guard_output" >/dev/null || fail "absence guard omitted its machine-readable proof"
+printf '%s\n' "$guard_output" | jq -e '.ok == true and .subscriptionReconcilerAbsent == true' >/dev/null || fail "absence guard omitted its machine-readable proof"
 assert_rejected "Docker could not enumerate" env DOCKER_BIN="$guard_mock" MOCK_RECONCILER_STATE=enumeration-failure "$reconciler_guard"
 for reconciler_state in running restarting paused exited; do
   assert_rejected "container exists in any state" env DOCKER_BIN="$guard_mock" MOCK_RECONCILER_STATE="$reconciler_state" "$reconciler_guard"
@@ -212,7 +212,7 @@ jq -e '
   .preservesProvisioningDryRun == true and
   .preservesReconciliationDisabled == true and
   .otherInstancesMutated == false
-' <<<"$dry_output" >/dev/null || fail "dry-run facts were incomplete"
+' < <(printf '%s\n' "$dry_output") >/dev/null || fail "dry-run facts were incomplete"
 grep -F 'add-metadata' "$log" >/dev/null && fail "dry run mutated metadata"
 [[ -f "$dry_snapshots/before-control.json" && -f "$dry_snapshots/before-control-startup.sh" ]] || fail "dry run omitted before snapshots"
 if stat -f '%Lp' "$dry_snapshots/before-control.json" >/dev/null 2>&1; then
@@ -226,7 +226,7 @@ write_state
 : >"$log"
 apply_snapshots="$test_root/apply-snapshots"
 apply_output="$(run_update apply "$apply_snapshots")"
-jq -e '.mode == "apply" and .status == "applied" and .otherInstancesMutated == false' <<<"$apply_output" >/dev/null || fail "apply facts were incomplete"
+printf '%s\n' "$apply_output" | jq -e '.mode == "apply" and .status == "applied" and .otherInstancesMutated == false' >/dev/null || fail "apply facts were incomplete"
 [[ "$(grep -c 'compute instances add-metadata' "$log")" == "1" ]] || fail "apply did not perform exactly one metadata mutation"
 grep -Fq "instances add-metadata $control " "$log" || fail "metadata mutation did not target only the control host"
 if grep -E 'managed-oss-host-worker|instances (create|delete|remove-metadata|set-machine-type)|disks (create|delete)|terraform (apply|destroy)' "$log" >/dev/null; then

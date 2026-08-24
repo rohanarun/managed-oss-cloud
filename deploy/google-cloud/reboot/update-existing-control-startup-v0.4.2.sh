@@ -163,7 +163,7 @@ chmod 0600 "$predecessor_startup"
 active_project="$("$gcloud_bin" config get-value project 2>/dev/null)"
 [[ "$active_project" == "$project" ]] || die "active gcloud project does not match --project"
 project_json="$("$gcloud_bin" projects describe "$project" --format=json)"
-jq -e --arg project "$project" '.projectId == $project and .lifecycleState == "ACTIVE"' <<<"$project_json" >/dev/null || die "project lookup mismatched or project is inactive"
+printf '%s\n' "$project_json" | jq -e --arg project "$project" '.projectId == $project and .lifecycleState == "ACTIVE"' >/dev/null || die "project lookup mismatched or project is inactive"
 
 describe_control() {
   "$gcloud_bin" compute instances describe "$control_instance" --project "$project" --zone "$zone" --format=json
@@ -221,7 +221,7 @@ jq -e \
     .reconciliationDisabled == true and
     .hmacConfigured == true and
     .releaseManifestSha256 == $manifestSha256
-  ' <<<"$remote_output" >/dev/null || die "current control boot/runtime state did not pass the exact safe v0.4.2 preflight"
+  ' < <(printf '%s\n' "$remote_output") >/dev/null || die "current control boot/runtime state did not pass the exact safe v0.4.2 preflight"
 
 write_facts() {
   local status="$1"
