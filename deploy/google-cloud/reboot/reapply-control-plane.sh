@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+set +x
+
+runtime_temp=""
+billing_temp=""
+control_temp=""
+cleanup() {
+  [[ -z "$runtime_temp" ]] || rm -f -- "$runtime_temp"
+  [[ -z "$billing_temp" ]] || rm -f -- "$billing_temp"
+  [[ -z "$control_temp" ]] || rm -f -- "$control_temp"
+}
+trap cleanup EXIT
+
+die() {
+  printf 'Control-plane reboot reapply refused: %s\n' "$*" >&2
+  exit 1
+}
+
+project=""
+instance=""
+machine_type=""
+hmac_secret_name=""
+release_dir=""
+preflight_only=false
+while (( $# > 0 )); do
+  case "$1" in
+    --project) project="${2:-}"; shift 2 ;;
+    --instance) instance="${2:-}"; shift 2 ;;
+    --machine-type) machine_type="${2:-}"; shift 2 ;;
+    --hmac-secret-name) hmac_secret_name="${2:-}"; shift 2 ;;
+    --release-dir) release_dir="${2:-}"; shift 2 ;;
+    --preflight-only) preflight_only=true; shift ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ "$project" =~ ^[a-z][a-z0-9-]{4,61}[a-z0-9]$ ]] || die "project is invalid"
+[[ "$instance" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "instance is invalid"
+[[ "$machine_type" =~ ^[a-z][a-z0-9-]{1,62}$ ]] || die "machine type is invalid"
+[[ "$hmac_secret_name" =~ ^[A-Za-z0-9_-]{1,255}$ ]] || die "HMAC Secret Manager name is invalid"
+[[ "$release_dir" == /opt/managed-oss/releases/* && -d "$release_dir" && ! -L "$release_dir" ]] || die "release directory is invalid"
+[[ "$(stat -c '%u' "$release_dir")" == "0" ]] || die "release directory is not root-owned"
+
+manifest="$release_dir/deploy/google-cloud/reboot/release-v0.4.0.json"
+[[ -f "$manifest" && ! -L "$manifest" ]] || die "release manifest is unavailable"
+[[ "$(stat -c '%u' "$manifest")" == "0" ]] || die "release manifest is not root-owned"
+jq -e '
+    .schemaVersion == 1 and
+    .releaseVersion == "v0.4.0" and
+    (.sourceCommit | test("^[a-f0-9]{40}$")) and
+    (.controlPlaneImage | test("^ghcr\\.io/rohanarun/managed-oss-cloud@sha256:[a-f0-9]{64}$")) and
+    .controlRuntime.PROVISIONING_MODE == "dry-run" and
+    .controlRuntime.PROVISIONING_WORKER == "disabled" and
+    .controlRuntime.SUITE_ENTITLEMENT_MODE == "hosted" and
+    .controlRuntime.HOSTING_ENTITLEMENT_MODE == "hosted" and
+    .controlRuntime.SUBSCRIPTION_RECONCILIATION_MODE == "disabled" and
+    .controlSecretVersions.extendedExternalEvidenceHmac == "1"
+  ' "$manifest" >/dev/null || die "release manifest does not preserve the safe v0.4.0 modes"
+
+metadata() {
+  curl -fsS -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"
+}
+
+[[ "$(metadata project/project-id)" == "$project" ]] || die "project identity mismatch"
+[[ "$(metadata instance/name)" == "$instance" ]] || die "instance identity mismatch"
+actual_machine_type="$(metadata instance/machine-type)"
+[[ "${actual_machine_type##*/}" == "$machine_type" ]] || die "machine type mismatch"
+
+while IFS=$'\t' read -r relative_path expected_sha; do
+  [[ "$relative_path" == deploy/google-cloud/* && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "invalid release asset entry"
+  asset="$release_dir/$relative_path"
+  [[ -f "$asset" && ! -L "$asset" ]] || die "release asset is unavailable"
+  [[ "$(stat -c '%u' "$asset")" == "0" ]] || die "release asset is not root-owned"
+  [[ "$(sha256sum "$asset" | awk '{print $1}')" == "$expected_sha" ]] || die "release asset digest mismatch"
+done < <(jq -r '.assetSha256 | to_entries[] | [.key, .value] | @tsv' "$manifest")
+
+runtime_env="/opt/managed-oss/config/runtime.env"
+billing_env="/opt/managed-oss/config/billing.env"
+control_env="/opt/managed-oss/config/control-plane.env"
+[[ -f "$runtime_env" && ! -L "$runtime_env" && -f "$billing_env" && ! -L "$billing_env" && -f "$control_env" && ! -L "$control_env" ]] || die "current control-plane configuration is unavailable"
+
+env_value() {
+  local file="$1"
+  local key="$2"
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; found += 1 } END { if (found != 1) exit 1 }' "$file"
+}
+
+expected_image="$(jq -r '.controlPlaneImage' "$manifest")"
+[[ "$(env_value "$runtime_env" CONTROL_PLANE_IMAGE)" == "$expected_image" ]] || die "current image is not the exact release digest"
+[[ "$(env_value "$runtime_env" PROVISIONING_MODE)" == "dry-run" ]] || die "current provisioning mode is not dry-run"
+[[ "$(env_value "$runtime_env" SUBSCRIPTION_RECONCILIATION_MODE)" == "disabled" ]] || die "current subscription reconciliation is not disabled"
+[[ "$(env_value "$billing_env" BILLING_MODE)" == "disabled" ]] || die "current billing mode is not disabled"
+[[ -z "$(env_value "$billing_env" STRIPE_SECRET_KEY)" && -z "$(env_value "$billing_env" STRIPE_WEBHOOK_SECRET)" ]] || die "disabled billing file contains provider secrets"
+hmac_count="$(awk -F= '$1 == "EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET" && length($0) > length($1) + 1 { found += 1 } END { print found + 0 }' "$control_env")"
+[[ "$hmac_count" == "1" ]] || die "current HMAC runtime configuration is missing or duplicated"
+[[ -f /opt/managed-oss/.host-ready ]] || die "current host readiness marker is absent"
+
+if [[ "$preflight_only" == "true" ]]; then
+  for service in database control-plane caddy gateway-reconciler; do
+    container_id="$(cd /opt/managed-oss/config && docker-compose ps -q "$service")"
+    [[ -n "$container_id" && "$(docker inspect --format '{{.State.Status}}' "$container_id")" == "running" ]] || die "current control-plane container state is not running"
+  done
+  (cd /opt/managed-oss/config && docker-compose exec -T control-plane node --input-type=module -e '
+    const response = await fetch("http://127.0.0.1:8787/api/health", {signal: AbortSignal.timeout(5000)});
+    const payload = await response.json();
+    if (!response.ok || payload.ok !== true || payload.persistence !== "postgres" || payload.mode !== "dry-run") process.exit(1);
+  ') >/dev/null || die "current control-plane API health is not exact"
+  jq -cn \
+    --arg role control \
+    --arg runtimeSha256 "$(sha256sum "$runtime_env" | awk '{print $1}')" \
+    --arg manifestSha256 "$(sha256sum "$manifest" | awk '{print $1}')" \
+    '{ok: true, role: $role, runtimeReady: true, billingDisabled: true, provisioningDryRun: true, hmacConfigured: true, runtimeSha256: $runtimeSha256, releaseManifestSha256: $manifestSha256}'
+  exit 0
+fi
+
+umask 077
+runtime_temp="$(mktemp /opt/managed-oss/config/.runtime.env.XXXXXXXX)"
+{
+  printf 'CONTROL_PLANE_IMAGE=%s\n' "$expected_image"
+  jq -r '.controlRuntime | to_entries[] | "\(.key)=\(.value)"' "$manifest"
+} >"$runtime_temp"
+chmod 0600 "$runtime_temp"
+mv -f -- "$runtime_temp" "$runtime_env"
+runtime_temp=""
+
+publishable_key="$(env_value "$billing_env" STRIPE_PUBLISHABLE_KEY)"
+billing_temp="$(mktemp /opt/managed-oss/config/.billing.env.XXXXXXXX)"
+{
+  printf 'STRIPE_SECRET_KEY=\n'
+  printf 'STRIPE_PUBLISHABLE_KEY=%s\n' "$publishable_key"
+  printf 'STRIPE_WEBHOOK_SECRET=\n'
+  printf 'BILLING_MODE=disabled\n'
+} >"$billing_temp"
+chmod 0600 "$billing_temp"
+mv -f -- "$billing_temp" "$billing_env"
+billing_temp=""
+
+access_token="$(metadata instance/service-accounts/default/token | jq -er '.access_token')"
+hmac_version="$(jq -r '.controlSecretVersions.extendedExternalEvidenceHmac' "$manifest")"
+hmac_value="$(curl -fsS -H "Authorization: Bearer $access_token" "https://secretmanager.googleapis.com/v1/projects/$project/secrets/$hmac_secret_name/versions/$hmac_version:access" | jq -er '.payload.data' | base64 -d)"
+access_token=""
+[[ "$hmac_value" =~ ^[A-Za-z0-9_+=/-]{32,512}$ ]] || die "HMAC secret payload is malformed"
+control_temp="$(mktemp /opt/managed-oss/config/.control-plane.env.XXXXXXXX)"
+hmac_replaced=false
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" == EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET=* ]]; then
+    [[ "$hmac_replaced" == "false" ]] || die "duplicate HMAC runtime assignment"
+    printf 'EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET=%s\n' "$hmac_value" >>"$control_temp"
+    hmac_replaced=true
+  else
+    printf '%s\n' "$line" >>"$control_temp"
+  fi
+done <"$control_env"
+[[ "$hmac_replaced" == "true" ]] || printf 'EXTENDED_EXTERNAL_EVIDENCE_HMAC_SECRET=%s\n' "$hmac_value" >>"$control_temp"
+hmac_value=""
+chmod 0600 "$control_temp"
+mv -f -- "$control_temp" "$control_env"
+control_temp=""
+
+install -m 0640 "$release_dir/deploy/google-cloud/docker-compose.yml" /opt/managed-oss/config/docker-compose.yml
+install -m 0640 "$release_dir/deploy/google-cloud/Caddyfile" /opt/managed-oss/config/Caddyfile
+
+exec "$release_dir/deploy/google-cloud/rollout-control-plane.sh" \
+  --source-commit "$(jq -r '.sourceCommit' "$manifest")"

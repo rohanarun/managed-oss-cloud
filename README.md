@@ -8,14 +8,14 @@ Managed OSS Cloud is an MIT-licensed control plane and an original AI-native bus
 
 The source registry in this checkout contains **37 first-party modules, 407 typed actions, and 447 MCP tools**. The MCP total is generated as three suite-level tools, one read-only list tool for each module, and one separately named tool for every typed action. Generic create/update/AI bypass tools are intentionally absent.
 
-The hosted site is not yet running this source release. Read-only checks on 2026-08-24 showed:
+The hosted control plane is running the exact digest-pinned v0.4.0 release. Live checks on 2026-08-24 proved:
 
-- `GET https://cloud.getsupers.com/api/health` reported PostgreSQL persistence with `mode: "dry-run"`;
-- `GET https://cloud.getsupers.com/api/config` reported `billingReady: false` and the $7/$50/$200 plan catalogue;
-- the new suite catalogue route returned the older SPA shell; and
-- the hosted e-sign session route returned `404`.
+- `GET https://cloud.getsupers.com/api/health` reports PostgreSQL persistence with `mode: "dry-run"`;
+- `GET https://cloud.getsupers.com/api/config` reports `billingReady: false` and the $7/$50/$200 plan catalogue;
+- `GET https://cloud.getsupers.com/api/suite/catalog` returns all 37 first-party modules as JSON; and
+- `GET https://cloud.getsupers.com/api/suite/actions` returns all 407 uniquely named typed actions.
 
-Therefore the managed-service link is a preview, not proof that billing, one-click provisioning, the 37-module suite, or the hosted signer is live. The repository defaults remain `PROVISIONING_MODE=dry-run` and `BILLING_MODE=disabled`. Deployments must verify their own health, config, migrations, worker capacity, routes, and browser workflows before advertising those capabilities.
+The managed suite and account control plane are therefore live, but customer charging and one-click provisioning remain deliberately disabled. The hosted deployment preserves `PROVISIONING_MODE=dry-run`, `BILLING_MODE=disabled`, measurement-only storage accounting, and disabled subscription reconciliation. Those gates must not be presented as production-ready billing or provisioning until hard storage quotas, paid-capacity compensation, provider adapters, and the remaining live acceptance work pass.
 
 ## Implemented in source
 
@@ -42,6 +42,15 @@ The production data path uses PostgreSQL. Local development without `DATABASE_UR
 ## First-party MIT suite
 
 These are clean, original implementations. Product names in the second column are category references only. The first-party modules do not claim API or UI compatibility and do not contain source code, branding, UI assets, or copy from those products.
+
+Sixteen requested product distributions also have independent public MIT repositories. Each repository owns a product-specific web interface, scoped HTTP client, CLI, stdio MCP server, Dockerfile, tests, and a v0.1.0 release tag. They share tenant data only through this control plane's authenticated API; none contains database credentials or a competing migration owner.
+
+| Product repository | Product repository | Product repository | Product repository |
+| --- | --- | --- | --- |
+| [PulseFlow](https://github.com/rohanarun/pulseflow) | [SignalDeck](https://github.com/rohanarun/signaldeck) | [RelayDesk](https://github.com/rohanarun/relaydesk) | [OrbitCRM](https://github.com/rohanarun/orbitcrm) |
+| [Northstar Work](https://github.com/rohanarun/northstar-work) | [IdeaLoop](https://github.com/rohanarun/idealoop) | [AtlasBase](https://github.com/rohanarun/atlasbase) | [RouteKit](https://github.com/rohanarun/routekit) |
+| [FairLaunch](https://github.com/rohanarun/fairlaunch) | [ProofPort](https://github.com/rohanarun/proofport) | [BeaconPage](https://github.com/rohanarun/beaconpage) | [Northstar Planning](https://github.com/rohanarun/northstar-planning) |
+| [Harbor Vault](https://github.com/rohanarun/harbor-vault) | [Threadline](https://github.com/rohanarun/threadline) | [Ledgerline Operations](https://github.com/rohanarun/ledgerline-operations) | [Evident AI Workbench](https://github.com/rohanarun/evident-ai-workbench) |
 
 | Family | Modules | Typed actions | Plan boundary |
 | --- | ---: | ---: | --- |
