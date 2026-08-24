@@ -146,7 +146,7 @@ The catalogue below is separate from the first-party MIT suite. `ready` means a 
 | Calendly-style scheduling | [Cal DIY](https://github.com/calcom/cal.diy) | v6.2.0 | AGPL-3.0 | Manifest `ready`; customer SMTP/calendar OAuth still required |
 | Mailchimp-style newsletters | [listmonk](https://github.com/knadh/listmonk) | v6.2.0 | AGPL-3.0 | Manifest `ready`; customer provider/domain configuration still required |
 | DocuSign-style signatures | [Documenso](https://github.com/documenso/documenso) | v2.17.0 | AGPL-3.0 | Manifest `ready`; customer SMTP and operational/legal review still required |
-| Jotform-style forms | [HeyForm](https://github.com/heyform/heyform) | v3.0.1 | AGPL-3.0 | Manifest `ready`; managed MongoDB, KeyDB, uploads, and hosting-layer Google OAuth broker |
+| Jotform-style forms | [HeyForm](https://github.com/heyform/heyform) | v3.0.1 | AGPL-3.0-only | Manifest `ready`; managed MongoDB, KeyDB, uploads, and hosting-layer Google OAuth broker |
 | Uptime monitoring | [Uptime Kuma](https://github.com/louislam/uptime-kuma) | 2.3.2 | MIT | Manifest `ready` |
 | Web analytics | [Umami](https://github.com/umami-software/umami) | v3.3.1 | MIT | Manifest `ready` |
 
