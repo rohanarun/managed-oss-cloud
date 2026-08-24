@@ -9,6 +9,7 @@ import type { AgentJob, ApplicationInstance, WorkerNodeActivity, WorkerNodeRoute
 import { buildRuntimeManifest, runtimeIngressNetwork, runtimeReservation, type RuntimeManifest } from "./app-manifests.js";
 import { migrateComposeIngressNetwork, migrateComposeResourceLimits, updateComposeApplicationImage, type ManagedEnvironmentSynchronization } from "./compose-upgrade.js";
 import { config } from "./config.js";
+import { isMissingDockerNetworkFailure } from "./docker-network-error.js";
 import { runtimeReadinessIssue } from "./runtime-readiness.js";
 import { requestGcpInstanceIdentityToken } from "./gcp-instance-identity.js";
 import { assertManifestMatchesReservation, assertWorkerResourceConsistency, assignedApplicationUsage, enforceStorageQuarantineContract, parseQuotaHelperProof, quotaHelperArguments, readHostResourceSnapshot, storageBytesPerGb, storageQuarantineMarker, writeStorageQuarantine, type WorkerResourcePolicy } from "./worker-resource-enforcement.js";
@@ -114,7 +115,7 @@ async function networkExists(networkName: string) {
     await docker(["network", "inspect", networkName]);
     return true;
   } catch (error) {
-    if (/no such network/i.test(dockerFailure(error))) return false;
+    if (isMissingDockerNetworkFailure(dockerFailure(error))) return false;
     throw error;
   }
 }
