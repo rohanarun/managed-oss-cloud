@@ -15,7 +15,7 @@ const generatorDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(generatorDirectory, "..");
 const defaultOutputRoot = "/Volumes/SP AI 01_16/managed-oss-product-repos";
 const sourceRelease = "v0.4.3";
-const sourceCommit = "59fd61f694faa8daef54bb9b28ee0249f4f1d2c6";
+const sourceCommit = "6947288c99d77f6391beb56211a6750c229a58d2";
 const sourceSnapshotSha256 = "2a97e3dd83247132d34fd65b6a217e6eb151d9fb3ecff87bfb062e16aa2cff3f";
 const generatedVersion = "0.3.0";
 
@@ -431,6 +431,37 @@ function normalizeBaseUrl(value) {
   return url.href.endsWith("/") ? url.href : url.href + "/";
 }
 
+function clientInputError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+function optionalQueryText(value, name, maximumLength = 200) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") throw clientInputError(name + " must be a string.");
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength) throw clientInputError(name + " must contain from 1 to " + maximumLength + " characters.");
+  return normalized;
+}
+
+function recordId(value) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value ?? "")) throw clientInputError("Record ID must be a UUID.");
+  return value;
+}
+
+function listRecordSummary(record) {
+  return {
+    id: record.id,
+    moduleId: record.moduleId,
+    recordType: record.recordType,
+    title: record.title,
+    state: record.state,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
 export class ProductClient {
   constructor(options) {
     if (!options?.token || typeof options.token !== "string") throw new Error("A scoped workspace API token is required.");
@@ -469,11 +500,25 @@ export class ProductClient {
 
   listRecords(options = {}) {
     const limit = options.limit ?? 50;
-    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Record limit must be an integer from 1 to 200.");
-    if (options.recordType && !manifest.module.recordTypes.includes(options.recordType)) throw new Error("Unknown record type for " + manifest.product.name + ".");
-    const query = new URLSearchParams({ moduleId: manifest.module.id, limit: String(limit) });
-    if (options.recordType) query.set("recordType", options.recordType);
-    return this.request("/api/suite/records?" + query.toString());
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw clientInputError("Record limit must be an integer from 1 to 100.");
+    const recordType = optionalQueryText(options.recordType, "Record type");
+    if (recordType && !manifest.module.recordTypes.includes(recordType)) throw clientInputError("Unknown record type for " + manifest.product.name + ".");
+    const state = optionalQueryText(options.state, "Record state");
+    const search = optionalQueryText(options.search, "Record search");
+    const cursor = optionalQueryText(options.cursor, "Record cursor", 2_048);
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (recordType) query.set("recordType", recordType);
+    if (state) query.set("state", state);
+    if (search) query.set("search", search);
+    if (cursor) query.set("cursor", cursor);
+    return this.request("/api/suite/modules/" + manifest.module.id + "/records?" + query.toString()).then((page) => ({
+      ...page,
+      records: Array.isArray(page.records) ? page.records.map(listRecordSummary) : [],
+    }));
+  }
+
+  recordDetail(value) {
+    return this.request("/api/suite/modules/" + manifest.module.id + "/records/" + encodeURIComponent(recordId(value)));
   }
 
   aiStatus(actionId) {
@@ -505,7 +550,7 @@ export function clientFromEnvironment(env = process.env, fetchImpl = fetch) {
 }
 `;
 
-const demoClientSource = String.raw`import { randomUUID } from "node:crypto";
+const demoClientSource = String.raw`import { createHash, randomUUID } from "node:crypto";
 import { actionById, manifest } from "./manifest.mjs";
 import { validateInput } from "./validation.mjs";
 
@@ -519,6 +564,93 @@ function titleForAction(action, input) {
     if (typeof input[key] === "string" && input[key].trim()) return input[key].trim();
   }
   return action.title;
+}
+
+function demoInputError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+function normalizePageOptions(options = {}) {
+  const limit = options.limit ?? 50;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw demoInputError("Record limit must be an integer from 1 to 100.");
+  const normalize = (value, name, maximumLength = 200) => {
+    if (value === undefined || value === null || value === "") return undefined;
+    if (typeof value !== "string") throw demoInputError(name + " must be a string.");
+    const normalized = value.trim();
+    if (!normalized || normalized.length > maximumLength) throw demoInputError(name + " must contain from 1 to " + maximumLength + " characters.");
+    return normalized;
+  };
+  const recordType = normalize(options.recordType, "Record type");
+  if (recordType && !manifest.module.recordTypes.includes(recordType)) throw demoInputError("Unknown record type for " + manifest.product.name + ".");
+  return {
+    recordType,
+    state: normalize(options.state, "Record state"),
+    search: normalize(options.search, "Record search")?.toLowerCase(),
+    cursor: normalize(options.cursor, "Record cursor", 2_048),
+    limit,
+  };
+}
+
+function pageFingerprint(options) {
+  return createHash("sha256").update(JSON.stringify({
+    version: 1,
+    moduleId: manifest.module.id,
+    recordType: options.recordType ?? null,
+    state: options.state ?? null,
+    search: options.search ?? null,
+    order: "updatedAt-desc-id-desc",
+  })).digest("base64url");
+}
+
+function decodePageCursor(value, fingerprint) {
+  if (!value) return undefined;
+  try {
+    const claims = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (claims?.version !== 1 || claims.fingerprint !== fingerprint || typeof claims.updatedAt !== "string" || !Number.isFinite(Date.parse(claims.updatedAt)) || typeof claims.id !== "string" || !claims.id) throw new Error("invalid");
+    return claims;
+  } catch {
+    throw demoInputError("Record cursor is invalid for this page query.");
+  }
+}
+
+function encodePageCursor(record, fingerprint) {
+  return Buffer.from(JSON.stringify({ version: 1, fingerprint, updatedAt: record.updatedAt, id: record.id })).toString("base64url");
+}
+
+function compareRecords(left, right) {
+  const byUpdatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return byUpdatedAt || right.id.localeCompare(left.id);
+}
+
+function isAfterCursor(record, cursor) {
+  return !cursor || record.updatedAt < cursor.updatedAt || (record.updatedAt === cursor.updatedAt && record.id < cursor.id);
+}
+
+function recordSummary(record) {
+  return {
+    id: record.id,
+    moduleId: record.moduleId,
+    recordType: record.recordType,
+    title: record.title,
+    state: record.state,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function readCapabilities() {
+  return {
+    version: "module-read-model.v1",
+    moduleId: manifest.module.id,
+    name: manifest.product.name,
+    category: manifest.module.category,
+    recordTypes: [...manifest.module.recordTypes],
+    aiCapabilities: [...manifest.module.aiCapabilities],
+    recordPage: { defaultLimit: 50, maxLimit: 100, order: "updatedAt-desc-id-desc", filters: ["recordType", "state", "titlePrefixOrExactId"] },
+    recordDetail: true,
+  };
 }
 
 export class DemoProductClient {
@@ -552,10 +684,32 @@ export class DemoProductClient {
   }
 
   async listRecords(options = {}) {
-    const records = this.records
-      .filter((record) => !options.recordType || record.recordType === options.recordType)
-      .slice(0, options.limit ?? 50);
-    return { records: clone(records), demo: true };
+    const normalized = normalizePageOptions(options);
+    const fingerprint = pageFingerprint(normalized);
+    const cursor = decodePageCursor(normalized.cursor, fingerprint);
+    const matching = this.records
+      .filter((record) => !normalized.recordType || record.recordType === normalized.recordType)
+      .filter((record) => !normalized.state || record.state === normalized.state)
+      .filter((record) => !normalized.search || record.id.toLowerCase() === normalized.search || record.title.toLowerCase().startsWith(normalized.search))
+      .filter((record) => isAfterCursor(record, cursor))
+      .sort(compareRecords);
+    const records = matching.slice(0, normalized.limit);
+    return {
+      records: records.map(recordSummary),
+      nextCursor: matching.length > normalized.limit ? encodePageCursor(records.at(-1), fingerprint) : undefined,
+      capabilities: readCapabilities(),
+      demo: true,
+    };
+  }
+
+  async recordDetail(recordId) {
+    const record = this.records.find((candidate) => candidate.id === recordId);
+    if (!record) {
+      const error = new Error("Record not found.");
+      error.status = 404;
+      throw error;
+    }
+    return { record: clone(record), demo: true };
   }
 
   async aiStatus(actionId) {
@@ -635,6 +789,8 @@ function usage() {
     "  " + command + " workspace\n" +
     "  " + command + " enable\n" +
     "  " + command + " list [record-type] [limit]\n" +
+    "  " + command + " page [json-options]\n" +
+    "  " + command + " detail <record-id>\n" +
     "  " + command + " ai-status <action-id>\n" +
     "  " + command + " action <action> <json-input>\n\n" +
     "Environment:\n" +
@@ -654,6 +810,10 @@ function parseObject(value) {
   return parsed;
 }
 
+function parsePageOptions(value) {
+  return value ? parseObject(value) : {};
+}
+
 async function run(argv = process.argv.slice(2)) {
   const [command, ...args] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") return process.stdout.write(usage() + "\n");
@@ -670,6 +830,8 @@ async function run(argv = process.argv.slice(2)) {
   if (command === "workspace") return output(await client.workspace());
   if (command === "enable") return output(await client.enable());
   if (command === "list") return output(await client.listRecords({ recordType: args[0], limit: args[1] ? Number(args[1]) : 50 }));
+  if (command === "page") return output(await client.listRecords(parsePageOptions(args[0])));
+  if (command === "detail") return output(await client.recordDetail(args[0]));
   if (command === "ai-status") return output(await client.aiStatus(args[0]));
   if (command === "action") {
     if (!args[0]) throw new Error("Choose an action: " + actions.map((item) => item.id).join(", ") + ".");
@@ -696,6 +858,7 @@ const builtInNames = {
   workspace: prefix + "_workspace",
   enable: prefix + "_enable",
   list: prefix + "_list_records",
+  detail: prefix + "_record_detail",
   aiStatus: prefix + "_ai_status",
 };
 
@@ -732,8 +895,23 @@ export function productTools() {
         type: "object",
         properties: {
           recordType: { type: "string", enum: manifest.module.recordTypes },
-          limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+          state: { type: "string", minLength: 1, maxLength: 200 },
+          search: { type: "string", minLength: 1, maxLength: 200, description: "Case-insensitive title prefix or exact record ID." },
+          limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+          cursor: { type: "string", minLength: 1, maxLength: 2048, description: "Opaque continuation cursor returned by the previous page." },
         },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    {
+      name: builtInNames.detail,
+      title: "Read " + manifest.product.name + " record detail",
+      description: "Read one visible product record including its payload. Requires read scope.",
+      inputSchema: {
+        type: "object",
+        required: ["recordId"],
+        properties: { recordId: { type: "string", format: "uuid" } },
         additionalProperties: false,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -777,7 +955,14 @@ function errorResult(error) {
 export async function callProductTool(name, args, client) {
   if (name === builtInNames.workspace) return result(await client.workspace());
   if (name === builtInNames.enable) return result(await client.enable());
-  if (name === builtInNames.list) return result(await client.listRecords(args ?? {}));
+  if (name === builtInNames.list) {
+    validateInput(productTools().find((tool) => tool.name === builtInNames.list).inputSchema, args ?? {});
+    return result(await client.listRecords(args ?? {}));
+  }
+  if (name === builtInNames.detail) {
+    validateInput(productTools().find((tool) => tool.name === builtInNames.detail).inputSchema, args ?? {});
+    return result(await client.recordDetail(args.recordId));
+  }
   if (name === builtInNames.aiStatus) {
     validateInput(productTools().find((tool) => tool.name === builtInNames.aiStatus).inputSchema, args ?? {});
     return result(await client.aiStatus(args.actionId));
@@ -928,7 +1113,14 @@ export function createProductWebServer({ client, webKey }) {
       let result;
       if (request.method === "GET" && url.pathname === "/product-api/workspace") result = await client.workspace();
       else if (request.method === "POST" && url.pathname === "/product-api/enable") result = await client.enable();
-      else if (request.method === "GET" && url.pathname === "/product-api/records") result = await client.listRecords({ recordType: url.searchParams.get("recordType") || undefined, limit: Number(url.searchParams.get("limit") ?? 50) });
+      else if (request.method === "GET" && url.pathname === "/product-api/records") result = await client.listRecords({
+        recordType: url.searchParams.get("recordType") || undefined,
+        state: url.searchParams.get("state") || undefined,
+        search: url.searchParams.get("search") || undefined,
+        limit: Number(url.searchParams.get("limit") ?? 50),
+        cursor: url.searchParams.get("cursor") || undefined,
+      });
+      else if (request.method === "GET" && url.pathname.startsWith("/product-api/records/")) result = await client.recordDetail(decodeURIComponent(url.pathname.slice("/product-api/records/".length)));
       else if (request.method === "GET" && url.pathname.startsWith("/product-api/ai-actions/")) result = await client.aiStatus(decodeURIComponent(url.pathname.slice("/product-api/ai-actions/".length)));
       else if (request.method === "POST" && url.pathname.startsWith("/product-api/actions/")) {
         const actionId = decodeURIComponent(url.pathname.slice("/product-api/actions/".length));
@@ -992,7 +1184,13 @@ const webAppSource = String.raw`const state = {
   selectedAction: null,
   recordQuery: "",
   recordType: "all",
+  recordState: "",
+  nextCursor: null,
+  recordLoading: false,
+  recordRequestId: 0,
 };
+
+let recordRefreshTimer;
 
 const byId = (id) => document.getElementById(id);
 const queryAll = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1146,7 +1344,7 @@ function recordCard(record, compact = false) {
   const top = make("span", "record-card-top");
   top.append(make("span", "record-type", humanize(record.recordType)), make("span", "record-state", humanize(record.state || "current")));
   card.append(top, make("strong", "record-title", record.title || humanize(record.recordType)), make("span", "record-date", "Updated " + shortDate(record.updatedAt)));
-  card.addEventListener("click", () => openRecord(record));
+  card.addEventListener("click", () => invoke(() => openRecord(record.id)));
   return card;
 }
 
@@ -1160,21 +1358,16 @@ function renderRecentRecords() {
   records.forEach((record) => target.append(recordCard(record, true)));
 }
 
-function filteredRecords() {
-  const query = state.recordQuery.trim().toLowerCase();
-  return state.records.filter((record) => {
-    if (state.recordType !== "all" && record.recordType !== state.recordType) return false;
-    if (!query) return true;
-    return [record.title, record.recordType, record.state, JSON.stringify(record.data)].some((value) => String(value ?? "").toLowerCase().includes(query));
-  });
-}
-
 function renderRecords() {
-  const records = filteredRecords();
-  byId("record-count").textContent = records.length + (records.length === 1 ? " record" : " records");
+  const records = state.records;
+  byId("record-count").textContent = records.length + (records.length === 1 ? " record loaded" : " records loaded");
+  const loadMore = byId("load-more-records");
+  loadMore.hidden = !state.connected || !state.nextCursor;
+  loadMore.disabled = state.recordLoading;
+  loadMore.textContent = state.recordLoading ? "Loading records" : "Load more records";
   const grid = clear(byId("record-grid"));
   if (!records.length) {
-    grid.append(make("p", "empty-state wide", state.connected ? "No records match this view." : "Connect a workspace to inspect records."));
+    grid.append(make("p", "empty-state wide", state.connected ? state.recordLoading ? "Loading records." : "No records match this view." : "Connect a workspace to inspect records."));
     return;
   }
   records.forEach((record) => grid.append(recordCard(record)));
@@ -1227,7 +1420,15 @@ function renderSettings() {
   state.manifest.module.aiCapabilities.forEach((capability) => capabilities.append(make("li", "", capability)));
 }
 
-function openRecord(record) {
+async function openRecord(recordId) {
+  setBusy(true, "Loading record detail");
+  let response;
+  try {
+    response = await api("/product-api/records/" + encodeURIComponent(recordId));
+  } finally {
+    setBusy(false);
+  }
+  const record = response.record ?? response;
   byId("record-detail-title").textContent = record.title || humanize(record.recordType);
   byId("record-detail-meta").textContent = humanize(record.recordType) + " · " + humanize(record.state || "current") + " · Updated " + shortDate(record.updatedAt);
   byId("record-detail-json").textContent = JSON.stringify(record, null, 2);
@@ -1355,10 +1556,16 @@ function renderActivity() {
   }
 }
 
-async function refreshRecords() {
-  if (!state.connected) return;
-  const response = await api("/product-api/records?limit=200");
-  state.records = Array.isArray(response.records) ? response.records : [];
+function recordPagePath(cursor) {
+  const query = new URLSearchParams({ limit: "50" });
+  if (state.recordType !== "all") query.set("recordType", state.recordType);
+  if (state.recordState.trim()) query.set("state", state.recordState.trim());
+  if (state.recordQuery.trim()) query.set("search", state.recordQuery.trim());
+  if (cursor) query.set("cursor", cursor);
+  return "/product-api/records?" + query.toString();
+}
+
+function renderRecordCollections() {
   renderMetrics();
   renderRecentRecords();
   renderRecords();
@@ -1370,6 +1577,37 @@ async function refreshRecords() {
     option.label = (record.title || humanize(record.recordType)) + " — " + humanize(record.recordType);
     identifiers.append(option);
   });
+}
+
+async function refreshRecords({ append = false } = {}) {
+  if (!state.connected) return;
+  const cursor = append ? state.nextCursor : undefined;
+  if (append && !cursor) return;
+  const requestId = ++state.recordRequestId;
+  state.recordLoading = true;
+  if (!append) state.nextCursor = null;
+  renderRecords();
+  try {
+    const response = await api(recordPagePath(cursor));
+    if (requestId !== state.recordRequestId) return;
+    const page = Array.isArray(response.records) ? response.records : [];
+    if (append) {
+      const existingIds = new Set(state.records.map((record) => record.id));
+      state.records = [...state.records, ...page.filter((record) => !existingIds.has(record.id))];
+    } else state.records = page;
+    state.nextCursor = typeof response.nextCursor === "string" && response.nextCursor ? response.nextCursor : null;
+    renderRecordCollections();
+  } finally {
+    if (requestId === state.recordRequestId) {
+      state.recordLoading = false;
+      renderRecords();
+    }
+  }
+}
+
+function scheduleRecordRefresh() {
+  clearTimeout(recordRefreshTimer);
+  recordRefreshTimer = setTimeout(() => invoke(() => refreshRecords()), 260);
 }
 
 async function connect() {
@@ -1426,6 +1664,9 @@ byId("disconnect").addEventListener("click", () => {
   state.workspace = null;
   state.records = [];
   state.demo = false;
+  state.nextCursor = null;
+  state.recordLoading = false;
+  state.recordRequestId += 1;
   sessionStorage.removeItem("product-web-key");
   byId("web-key").value = "";
   setConnection(false);
@@ -1441,10 +1682,12 @@ byId("enable-product").addEventListener("click", () => invoke(async () => {
   state.workspace = await api("/product-api/workspace");
   toast("Product enabled for this workspace.", "success");
 }));
-byId("refresh-records").addEventListener("click", () => invoke(refreshRecords));
+byId("refresh-records").addEventListener("click", () => invoke(() => refreshRecords()));
 byId("view-all-records").addEventListener("click", () => activateView("records"));
-byId("record-query").addEventListener("input", (event) => { state.recordQuery = event.target.value; renderRecords(); });
-byId("record-type-filter").addEventListener("change", (event) => { state.recordType = event.target.value; renderRecords(); });
+byId("record-query").addEventListener("input", (event) => { state.recordQuery = event.target.value; scheduleRecordRefresh(); });
+byId("record-type-filter").addEventListener("change", (event) => { state.recordType = event.target.value; invoke(() => refreshRecords()); });
+byId("record-state-filter").addEventListener("input", (event) => { state.recordState = event.target.value; scheduleRecordRefresh(); });
+byId("load-more-records").addEventListener("click", () => invoke(() => refreshRecords({ append: true })));
 byId("action-execute").addEventListener("click", executeSelectedAction);
 byId("action-close").addEventListener("click", () => byId("action-dialog").close());
 byId("record-close").addEventListener("click", () => byId("record-dialog").close());
@@ -1453,6 +1696,7 @@ byId("global-search").addEventListener("keydown", (event) => {
   state.recordQuery = event.currentTarget.value;
   byId("record-query").value = state.recordQuery;
   activateView("records");
+  invoke(() => refreshRecords());
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -1558,11 +1802,13 @@ const indexTemplate = String.raw`<!doctype html>
     <section id="view-records" class="view" hidden>
       <div class="view-heading"><div><p class="eyebrow">DURABLE WORK</p><h1>Records</h1><p>Search, filter, and inspect product-scoped records without exposing database credentials.</p></div><button id="enable-product" class="primary" type="button">Enable product</button></div>
       <div class="record-toolbar">
-        <label><span>Search records</span><input id="record-query" type="search" placeholder="Title, state, or data"></label>
+        <label><span>Search records</span><input id="record-query" type="search" placeholder="Title prefix or exact record ID"></label>
         <label><span>Record type</span><select id="record-type-filter"></select></label>
+        <label><span>State</span><input id="record-state-filter" type="search" placeholder="Exact state"></label>
         <strong id="record-count">0 records</strong>
       </div>
       <div id="record-grid" class="record-grid"></div>
+      <div class="record-pagination"><button id="load-more-records" class="secondary" type="button" hidden>Load more records</button></div>
     </section>
 
     <section id="view-workflows" class="view" hidden>
@@ -1746,12 +1992,14 @@ kbd { position: absolute; right: 0.65rem; border: 1px solid var(--line-strong); 
 .view-heading { display: flex; align-items: end; justify-content: space-between; gap: 2rem; min-height: 18rem; padding: 4rem 0 3rem; }
 .view-heading h1 { margin-bottom: 0.7rem; }
 .view-heading p:not(.eyebrow) { max-width: 56rem; margin-bottom: 0; }
-.record-toolbar { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(12rem, 0.45fr) auto; gap: 0.8rem; align-items: end; border: 1px solid var(--line); border-radius: 1rem; padding: 1rem; background: var(--surface); }
+.record-toolbar { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(11rem, 0.42fr) minmax(10rem, 0.36fr) auto; gap: 0.8rem; align-items: end; border: 1px solid var(--line); border-radius: 1rem; padding: 1rem; background: var(--surface); }
 .record-toolbar label { display: grid; gap: 0.42rem; color: var(--muted); font-size: 0.7rem; }
 .record-toolbar strong { padding: 0.8rem 0; color: var(--muted-strong); font-size: 0.74rem; white-space: nowrap; }
 .record-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: dense; gap: 0.8rem; margin-top: 0.8rem; }
 .record-grid .record-card { min-height: 11rem; padding: 1rem; }
 .record-grid .record-title { align-self: end; font-size: 1.05rem; }
+.record-pagination { display: flex; justify-content: center; padding: 1.2rem 0 0; }
+.record-pagination button { min-width: 12rem; }
 .empty-state { display: grid; place-items: center; min-height: 9rem; margin: 0; border: 1px dashed var(--line-strong); border-radius: 0.72rem; padding: 1rem; text-align: center; }
 .empty-state.wide { grid-column: 1 / -1; }
 
@@ -1867,6 +2115,10 @@ async function parseBody(request) {
 
 export async function createFakeApi(moduleId) {
   const requests = [];
+  const records = [
+    { id: "00000000-0000-4000-8000-000000000001", moduleId, recordType: "sample-record", title: "Alpha record", state: "active", createdAt: "2026-08-24T12:00:00.000Z", updatedAt: "2026-08-25T12:00:00.000Z" },
+    { id: "00000000-0000-4000-8000-000000000002", moduleId, recordType: "sample-record", title: "Beta record", state: "review", createdAt: "2026-08-23T12:00:00.000Z", updatedAt: "2026-08-24T12:00:00.000Z" },
+  ];
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     const body = await parseBody(request);
@@ -1879,7 +2131,20 @@ export async function createFakeApi(moduleId) {
     const modulePrefix = "/api/suite/modules/" + moduleId;
     if (url.pathname === "/api/suite/workspace") return response.end(JSON.stringify({ id: "workspace-1", plan: "fleet", enabledModuleIds: [moduleId] }));
     if (url.pathname === modulePrefix + "/enable" && request.method === "POST") return response.end(JSON.stringify({ enabled: true, moduleId }));
-    if (url.pathname === "/api/suite/records") return response.end(JSON.stringify({ records: [{ id: "record-1", moduleId }] }));
+    if (url.pathname === modulePrefix + "/records" && request.method === "GET") {
+      const page = url.searchParams.has("cursor") ? records.slice(1) : records.slice(0, 1);
+      return response.end(JSON.stringify({
+        records: page,
+        nextCursor: url.searchParams.has("cursor") ? undefined : "opaque-next-page",
+        capabilities: { version: "module-read-model.v1", moduleId, recordDetail: true, recordPage: { maxLimit: 100 } },
+      }));
+    }
+    if (url.pathname.startsWith(modulePrefix + "/records/") && request.method === "GET") {
+      const record = records.find((candidate) => candidate.id === decodeURIComponent(url.pathname.slice((modulePrefix + "/records/").length)));
+      if (record) return response.end(JSON.stringify({ record: { ...record, data: { privatePayload: "detail-only" } } }));
+      response.statusCode = 404;
+      return response.end(JSON.stringify({ error: "Record not found." }));
+    }
     if (url.pathname.startsWith("/api/suite/ai-actions/")) return response.end(JSON.stringify({ id: url.pathname.split("/").at(-1), status: "completed" }));
     if (url.pathname.startsWith(modulePrefix + "/actions/") && request.method === "POST") {
       return response.end(JSON.stringify({ ok: true, moduleId, actionId: url.pathname.split("/").at(-1), input: body.input }));
@@ -1918,14 +2183,30 @@ test("client uses bearer auth and cannot escape its fixed module", async (contex
   const client = new ProductClient({ baseUrl: fake.url, token: "test-token" });
   const workspace = await client.workspace();
   assert.equal(workspace.id, "workspace-1");
-  const records = await client.listRecords({ limit: 25 });
+  const pageOptions = { recordType: manifest.module.recordTypes[0], state: "active", search: "Alpha", limit: 100 };
+  const records = await client.listRecords(pageOptions);
   assert.equal(records.records[0].moduleId, manifest.module.id);
+  assert.equal(records.records[0].data, undefined);
+  assert.equal(records.nextCursor, "opaque-next-page");
+  const next = await client.listRecords({ ...pageOptions, cursor: records.nextCursor });
+  assert.equal(next.records[0].id, "00000000-0000-4000-8000-000000000002");
+  const detail = await client.recordDetail(records.records[0].id);
+  assert.equal(detail.record.data.privatePayload, "detail-only");
   const action = manifest.actions[0];
   const result = await client.runAction(action.id, action.exampleInput);
   assert.equal(result.moduleId, manifest.module.id);
   assert.equal(result.actionId, action.id);
   assert.ok(fake.requests.every((request) => request.authorization === "Bearer test-token"));
+  const pageRequest = fake.requests.find((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/records" && !request.search.includes("cursor="));
+  assert.equal(new URLSearchParams(pageRequest.search).get("recordType"), manifest.module.recordTypes[0]);
+  assert.equal(new URLSearchParams(pageRequest.search).get("state"), "active");
+  assert.equal(new URLSearchParams(pageRequest.search).get("search"), "Alpha");
+  assert.equal(new URLSearchParams(pageRequest.search).get("limit"), "100");
+  assert.ok(fake.requests.some((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/records/" + records.records[0].id));
+  assert.ok(fake.requests.every((request) => request.path !== "/api/suite/records"));
   assert.ok(fake.requests.some((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/actions/" + action.id));
+  assert.throws(() => client.listRecords({ limit: 101 }), /1 to 100/);
+  assert.throws(() => client.recordDetail("not-a-uuid"), /UUID/);
   assert.throws(() => client.runAction("not-a-product-action", {}), /Unknown/);
   assert.throws(() => client.runAction(action.id, {}), /required/);
 });
@@ -1993,10 +2274,21 @@ test("CLI invokes the fixed product endpoint", async (context) => {
     [manifest.product.environmentPrefix + "_TOKEN"]: "test-token",
     [manifest.product.environmentPrefix + "_URL"]: fake.url,
   };
+  const pageOptions = { recordType: manifest.module.recordTypes[0], state: "active", search: "Alpha", limit: 100, cursor: "opaque-page" };
+  const { stdout: pageOutput } = await execute(process.execPath, [cli, "page", JSON.stringify(pageOptions)], { env });
+  const page = JSON.parse(pageOutput);
+  assert.equal(page.records[0].moduleId, manifest.module.id);
+  assert.equal(page.records[0].data, undefined);
+  const { stdout: detailOutput } = await execute(process.execPath, [cli, "detail", page.records[0].id], { env });
+  assert.equal(JSON.parse(detailOutput).record.data.privatePayload, "detail-only");
   const { stdout } = await execute(process.execPath, [cli, "action", action.id, JSON.stringify(action.exampleInput)], { env });
   const result = JSON.parse(stdout);
   assert.equal(result.moduleId, manifest.module.id);
   assert.equal(result.actionId, action.id);
+  const pageRequest = fake.requests.find((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/records");
+  assert.match(pageRequest.search, /state=active/);
+  assert.match(pageRequest.search, /search=Alpha/);
+  assert.match(pageRequest.search, /cursor=opaque-page/);
 });
 `;
 
@@ -2057,11 +2349,21 @@ test("stdio MCP advertises and calls only this product's typed tools", async (co
   const initialized = await session.request({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } });
   assert.equal(initialized.result.serverInfo.name, manifest.product.slug);
   const listed = await session.request({ id: 2, method: "tools/list", params: {} });
-  assert.equal(listed.result.tools.length, manifest.actions.length + 4);
+  assert.equal(listed.result.tools.length, manifest.actions.length + 5);
   const productNames = new Set(manifest.actions.map((action) => action.productMcpToolName));
   assert.ok(listed.result.tools.filter((tool) => productNames.has(tool.name)).every((tool) => tool.inputSchema.type === "object"));
+  const listName = manifest.product.mcpPrefix + "_list_records";
+  const detailName = manifest.product.mcpPrefix + "_record_detail";
+  const listTool = listed.result.tools.find((tool) => tool.name === listName);
+  assert.equal(listTool.inputSchema.properties.limit.maximum, 100);
+  assert.deepEqual(Object.keys(listTool.inputSchema.properties).sort(), ["cursor", "limit", "recordType", "search", "state"]);
+  const page = await session.request({ id: 3, method: "tools/call", params: { name: listName, arguments: { recordType: manifest.module.recordTypes[0], state: "review", search: "Beta", limit: 100, cursor: "opaque-next-page" } } });
+  assert.equal(page.result.isError, undefined);
+  assert.equal(page.result.structuredContent.result.records[0].data, undefined);
+  const detail = await session.request({ id: 4, method: "tools/call", params: { name: detailName, arguments: { recordId: page.result.structuredContent.result.records[0].id } } });
+  assert.equal(detail.result.structuredContent.result.record.data.privatePayload, "detail-only");
   const action = manifest.actions[0];
-  const called = await session.request({ id: 3, method: "tools/call", params: { name: action.productMcpToolName, arguments: action.exampleInput } });
+  const called = await session.request({ id: 5, method: "tools/call", params: { name: action.productMcpToolName, arguments: action.exampleInput } });
   assert.equal(called.result.isError, undefined);
   assert.equal(called.result.structuredContent.result.moduleId, manifest.module.id);
 });
@@ -2086,9 +2388,9 @@ test("web UI keeps the API token server-side and gates proxy calls", async (cont
     new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   ]));
 
-  const page = await fetch(baseUrl + "/");
-  assert.equal(page.status, 200);
-  assert.match(await page.text(), new RegExp(manifest.product.name));
+  const landing = await fetch(baseUrl + "/");
+  assert.equal(landing.status, 200);
+  assert.match(await landing.text(), new RegExp(manifest.product.name));
   const publicManifest = await (await fetch(baseUrl + "/manifest")).json();
   assert.equal(publicManifest.module.id, manifest.module.id);
   const denied = await fetch(baseUrl + "/product-api/workspace");
@@ -2096,6 +2398,17 @@ test("web UI keeps the API token server-side and gates proxy calls", async (cont
   const workspace = await fetch(baseUrl + "/product-api/workspace", { headers: { "X-Product-Web-Key": webKey } });
   assert.equal(workspace.status, 200);
   assert.equal((await workspace.json()).id, "workspace-1");
+  const records = await fetch(baseUrl + "/product-api/records?recordType=" + encodeURIComponent(manifest.module.recordTypes[0]) + "&state=review&search=Beta&limit=100&cursor=opaque-next-page", { headers: { "X-Product-Web-Key": webKey } });
+  assert.equal(records.status, 200);
+  const page = await records.json();
+  assert.equal(page.records[0].data, undefined);
+  const detail = await fetch(baseUrl + "/product-api/records/" + page.records[0].id, { headers: { "X-Product-Web-Key": webKey } });
+  assert.equal(detail.status, 200);
+  assert.equal((await detail.json()).record.data.privatePayload, "detail-only");
+  const pageRequest = fake.requests.find((request) => request.path === "/api/suite/modules/" + manifest.module.id + "/records");
+  assert.match(pageRequest.search, /state=review/);
+  assert.match(pageRequest.search, /search=Beta/);
+  assert.match(pageRequest.search, /cursor=opaque-next-page/);
   assert.ok(fake.requests.every((request) => request.authorization === "Bearer test-token"));
 });
 `;
@@ -2110,14 +2423,27 @@ test("sample workspace exercises every declared product action", async () => {
   const workspace = await client.workspace();
   assert.equal(workspace.demo, true);
   assert.deepEqual(workspace.workspace.enabledModuleIds, [manifest.module.id]);
-  const initial = await client.listRecords({ limit: 200 });
+  const initial = await client.listRecords({ limit: 100 });
   assert.ok(initial.records.length > 0);
+  assert.ok(initial.records.every((record) => record.data === undefined));
+  const exact = await client.listRecords({ search: initial.records[0].id, state: initial.records[0].state, limit: 100 });
+  assert.deepEqual(exact.records.map((record) => record.id), [initial.records[0].id]);
+  const prefix = await client.listRecords({ search: initial.records[0].title.slice(0, 4).toUpperCase(), limit: 100 });
+  assert.ok(prefix.records.some((record) => record.id === initial.records[0].id));
+  const detail = await client.recordDetail(initial.records[0].id);
+  assert.ok(detail.record.data);
+  const firstPage = await client.listRecords({ limit: 1 });
+  if (firstPage.nextCursor) {
+    const secondPage = await client.listRecords({ limit: 1, cursor: firstPage.nextCursor });
+    assert.notEqual(secondPage.records[0].id, firstPage.records[0].id);
+    await assert.rejects(client.listRecords({ limit: 1, state: firstPage.records[0].state, cursor: firstPage.nextCursor }), /cursor/i);
+  }
   for (const action of manifest.actions) {
     const result = await client.runAction(action.id, action.exampleInput);
     assert.equal(result.action.id, action.id);
     assert.equal(result.demo, true);
   }
-  const final = await client.listRecords({ limit: 200 });
+  const final = await client.listRecords({ limit: 100 });
   assert.ok(final.records.length >= initial.records.length);
 });
 
@@ -2126,7 +2452,7 @@ test("every declared action output type is available through record filtering", 
   const outputTypes = new Set(manifest.actions.map((action) => action.recordType).filter(Boolean));
   for (const recordType of outputTypes) {
     assert.ok(manifest.module.recordTypes.includes(recordType));
-    const result = await client.listRecords({ recordType, limit: 200 });
+    const result = await client.listRecords({ recordType, limit: 100 });
     assert.ok(Array.isArray(result.records));
   }
 });
@@ -2148,8 +2474,16 @@ test("product UI exposes overview, records, workflows, AI, settings, and guided 
     assert.match(html, new RegExp("id=\\\"view-" + view + "\\\""));
   }
   assert.match(html, /id="action-form"/);
+  assert.match(html, /id="record-state-filter"/);
+  assert.match(html, /id="load-more-records"/);
   assert.match(app, /function createField/);
   assert.match(app, /manifest\.experience\.workflowGroups/);
+  assert.match(app, /query\.set\("search", state\.recordQuery\.trim\(\)\)/);
+  assert.match(app, /query\.set\("state", state\.recordState\.trim\(\)\)/);
+  assert.match(app, /query\.set\("cursor", cursor\)/);
+  assert.match(app, /\/product-api\/records\/" \+ encodeURIComponent\(recordId\)/);
+  assert.doesNotMatch(app, /JSON\.stringify\(record\.data\)/);
+  assert.doesNotMatch(app, /function filteredRecords/);
   assert.doesNotMatch(html, /<body[^>]+style=/);
   assert.match(css, new RegExp("--accent:\\s*" + manifest.product.accent.replace("#", "\\#"), "i"));
   assert.match(css, /grid-auto-flow:\s*dense/);
@@ -2230,7 +2564,7 @@ ${product.name} is a focused, public MIT distribution for the \`${module.id}\` m
 
 ## Product v1 boundary
 
-This release is declared-action complete: every typed action in this repository's product manifest is exposed through guided schema-driven browser forms with durable record browsing, workflow groups, AI proposal surfaces, connection settings, CLI parity, and MCP parity. The screenshot above is captured from the actual application in its visibly labeled local sample-workspace mode.
+This release is declared-action complete: every typed action in this repository's product manifest is exposed through guided schema-driven browser forms with paginated durable record summaries, detail-only payload reads, workflow groups, AI proposal surfaces, connection settings, CLI parity, and MCP parity. The screenshot above is captured from the actual application while it is connected to the shared authenticated backend and displaying records created through real product actions.
 
 That boundary does not claim feature parity with any unrelated mature third-party product. Provider adapters, external delivery, customer-selected storage, legal review, and other category-specific stop lines remain explicit in the [suite acceptance matrix](https://github.com/rohanarun/managed-oss-cloud/blob/main/docs/product-v1-acceptance.md).
 
@@ -2261,6 +2595,8 @@ export ${prefix}_TOKEN="a-scoped-workspace-token"
 export ${prefix}_URL="https://cloud.getsupers.com"
 ${product.command} actions
 ${product.command} workspace
+${product.command} page '{"limit":50,"state":"active","search":"Title prefix"}'
+${product.command} detail '00000000-0000-4000-8000-000000000001'
 ${product.command} action ${manifest.actions[0].id} '${JSON.stringify(manifest.actions[0].exampleInput)}'
 \`\`\`
 
@@ -2300,7 +2636,7 @@ docker run --rm -p 4173:4173 \\
 
 ## Connect the MCP server
 
-The MCP server uses newline-delimited JSON-RPC over stdio and implements \`initialize\`, \`ping\`, \`tools/list\`, and \`tools/call\`. It advertises four product utilities plus the ${manifest.actions.length} product action tools with their pinned JSON input schemas.
+The MCP server uses newline-delimited JSON-RPC over stdio and implements \`initialize\`, \`ping\`, \`tools/list\`, and \`tools/call\`. It advertises five product utilities, including paginated record list and detail reads, plus the ${manifest.actions.length} product action tools with their pinned JSON input schemas.
 
 \`\`\`json
 {
@@ -2358,7 +2694,7 @@ npm run verify:screenshot
 npm pack --dry-run
 \`\`\`
 
-The repository tests prove bearer authentication, fixed module routing, input validation, every declared action's HTTP/CLI/MCP registration, sample-workspace behavior, web-key protection, server-side token handling, and the captured PNG's format and dimensions. Durable backend behavior and tenant isolation remain covered by managed-oss-cloud's PostgreSQL and application acceptance suites.
+The repository tests prove bearer authentication, fixed module routing, summary-only pagination, detail-only payload reads, server-side search and filters, input validation, every declared action's HTTP/CLI/MCP registration, sample-workspace behavior, web-key protection, server-side token handling, and the captured PNG's format and dimensions. Durable backend behavior and tenant isolation remain covered by managed-oss-cloud's PostgreSQL and application acceptance suites.
 
 ## License
 

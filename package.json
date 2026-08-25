@@ -22,6 +22,7 @@
     "verify:mcp": "node scripts/verify-mcp.mjs",
     "verify:live-products": "node scripts/verify-live-product-clients.mjs",
     "generate:products": "node --import tsx scripts/generate-product-repositories.mjs",
+    "screenshots:serve-real": "node --import tsx scripts/serve-real-product-screenshot-fleet.mjs",
     "audit:licenses": "node scripts/license-audit.mjs",
     "migrate": "node dist-server/server/migrate-command.js",
     "attest:external-evidence": "node dist-server/server/external-evidence-attestation-command.js",

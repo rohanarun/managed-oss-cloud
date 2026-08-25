@@ -44,9 +44,25 @@ interface DurableRecord {
   recordType: string;
 }
 
+interface ListedRecord {
+  id: string;
+  moduleId: string;
+  recordType: string;
+  data?: never;
+  workspaceId?: never;
+}
+
+interface RecordDetail {
+  id: string;
+  moduleId: string;
+  recordType: string;
+  data: Record<string, unknown>;
+}
+
 interface ProductClientShape {
   workspace(): Promise<unknown>;
-  listRecords(options: { recordType: string; limit: number }): Promise<unknown>;
+  listRecords(options: { recordType?: string; state?: string; search?: string; limit?: number; cursor?: string }): Promise<unknown>;
+  recordDetail(recordId: string): Promise<unknown>;
   runAction(actionId: string, input: Record<string, unknown>): Promise<unknown>;
 }
 
@@ -84,7 +100,23 @@ function recordsFrom(value: unknown) {
 function recordsListedBy(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const records = (value as { records?: unknown }).records;
-  return Array.isArray(records) ? records.filter(isDurableRecord) : [];
+  return Array.isArray(records) ? records.filter((record): record is ListedRecord => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+    const summary = record as Partial<ListedRecord>;
+    return [summary.id, summary.moduleId, summary.recordType].every((field) => typeof field === "string" && field.length > 0)
+      && !("data" in record)
+      && !("workspaceId" in record);
+  }) : [];
+}
+
+function recordDetailedBy(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = (value as { record?: unknown }).record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) return undefined;
+  const detail = record as Partial<RecordDetail>;
+  if (![detail.id, detail.moduleId, detail.recordType].every((field) => typeof field === "string" && field.length > 0)) return undefined;
+  if (!detail.data || typeof detail.data !== "object" || Array.isArray(detail.data) || "workspaceId" in record) return undefined;
+  return detail as RecordDetail;
 }
 
 function resultFromMcp(value: unknown) {
@@ -276,12 +308,21 @@ describe("generated product real-backend acceptance", () => {
         expect(manifest.module.recordTypes).toContain(returnedRecord.recordType);
 
         stage = `list ${returnedRecord.recordType} through generated product client`;
-        const listedByClient = recordsListedBy(await withDeadline(
-          productClient.listRecords({ recordType: returnedRecord.recordType, limit: 200 }),
+        const clientPage = await withDeadline(
+          productClient.listRecords({ recordType: returnedRecord.recordType, search: returnedRecord.id, limit: 100 }),
           subprocessTimeoutMs,
           `${productDirectory} client list`,
-        ));
+        );
+        const listedByClient = recordsListedBy(clientPage);
         expect(listedByClient.map((record) => record.id)).toContain(returnedRecord.id);
+        expect(listedByClient.every((record) => !("data" in record) && !("workspaceId" in record))).toBe(true);
+        const detailedByClient = recordDetailedBy(await withDeadline(
+          productClient.recordDetail(returnedRecord.id),
+          subprocessTimeoutMs,
+          `${productDirectory} client detail`,
+        ));
+        expect(detailedByClient?.id).toBe(returnedRecord.id);
+        expect(detailedByClient?.moduleId).toBe(manifest.module.id);
 
         stage = `replay ${primaryAction.id} and list ${returnedRecord.recordType} through generated CLI`;
         const cliAction = await execFileAsync(process.execPath, [
@@ -301,7 +342,7 @@ describe("generated product real-backend acceptance", () => {
         ));
         if (!cliReturnedRecord) throw new Error(`CLI action ${primaryAction.id} returned no durable ${returnedRecord.recordType} record.`);
         expect(cliReturnedRecord.workspaceId).toBe(workspaceId);
-        const cli = await execFileAsync(process.execPath, [path.join(productRoot, "src", "cli.mjs"), "list", returnedRecord.recordType, "200"], {
+        const cli = await execFileAsync(process.execPath, [path.join(productRoot, "src", "cli.mjs"), "list", returnedRecord.recordType, "100"], {
           cwd: productRoot,
           env: clientEnvironment,
           timeout: subprocessTimeoutMs,
@@ -311,6 +352,14 @@ describe("generated product real-backend acceptance", () => {
         const cliListedRecordIds = recordsListedBy(JSON.parse(cli.stdout)).map((record) => record.id);
         expect(cliListedRecordIds).toContain(returnedRecord.id);
         expect(cliListedRecordIds).toContain(cliReturnedRecord.id);
+        const cliDetail = await execFileAsync(process.execPath, [path.join(productRoot, "src", "cli.mjs"), "detail", returnedRecord.id], {
+          cwd: productRoot,
+          env: clientEnvironment,
+          timeout: subprocessTimeoutMs,
+          maxBuffer: 2 * 1024 * 1024,
+        });
+        expect(cliDetail.stderr).toBe("");
+        expect(recordDetailedBy(JSON.parse(cliDetail.stdout))?.id).toBe(returnedRecord.id);
 
         stage = `inspect workspace and list ${returnedRecord.recordType} through generated MCP`;
         const mcp = new Client({ name: `generated-${productDirectory}-acceptance`, version: manifest.release.productVersion });
@@ -328,6 +377,7 @@ describe("generated product real-backend acceptance", () => {
           expect(toolNames).toEqual(expect.arrayContaining([
             `${manifest.product.mcpPrefix}_workspace`,
             `${manifest.product.mcpPrefix}_list_records`,
+            `${manifest.product.mcpPrefix}_record_detail`,
             primaryAction.productMcpToolName,
           ]));
           const mcpWorkspace = resultFromMcp(await withDeadline(
@@ -348,7 +398,7 @@ describe("generated product real-backend acceptance", () => {
           if (!mcpReturnedRecord) throw new Error(`MCP action ${primaryAction.id} returned no durable ${returnedRecord.recordType} record.`);
           expect(mcpReturnedRecord.workspaceId).toBe(workspaceId);
           const mcpList = resultFromMcp(await withDeadline(
-            mcp.callTool({ name: `${manifest.product.mcpPrefix}_list_records`, arguments: { recordType: returnedRecord.recordType, limit: 200 } }),
+            mcp.callTool({ name: `${manifest.product.mcpPrefix}_list_records`, arguments: { recordType: returnedRecord.recordType, limit: 100 } }),
             subprocessTimeoutMs,
             `${productDirectory} MCP list`,
           ));
@@ -356,6 +406,12 @@ describe("generated product real-backend acceptance", () => {
           expect(mcpListedRecordIds).toContain(returnedRecord.id);
           expect(mcpListedRecordIds).toContain(cliReturnedRecord.id);
           expect(mcpListedRecordIds).toContain(mcpReturnedRecord.id);
+          const mcpDetail = resultFromMcp(await withDeadline(
+            mcp.callTool({ name: `${manifest.product.mcpPrefix}_record_detail`, arguments: { recordId: returnedRecord.id } }),
+            subprocessTimeoutMs,
+            `${productDirectory} MCP detail`,
+          ));
+          expect(recordDetailedBy(mcpDetail)?.id).toBe(returnedRecord.id);
         } finally {
           await withDeadline(mcp.close(), subprocessTimeoutMs, `${productDirectory} MCP close`);
         }

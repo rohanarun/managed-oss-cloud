@@ -43,6 +43,32 @@ describe("standalone product repository generator", () => {
       expect(manifest.actions.every((action) => !action.recordType || manifest.module.recordTypes.includes(action.recordType))).toBe(true);
       expect(manifest.experience.workflowGroups.flatMap((group) => group.actionIds)).toHaveLength(manifest.actions.length);
       expect(JSON.stringify(manifest.actions.map((action) => action.exampleInput))).not.toMatch(/<[^<>]+>/);
+
+      const [client, cli, mcp, webServer, webApp, webHtml] = await Promise.all([
+        readFile(join(outputRoot, "schemadeck", "src", "client.mjs"), "utf8"),
+        readFile(join(outputRoot, "schemadeck", "src", "cli.mjs"), "utf8"),
+        readFile(join(outputRoot, "schemadeck", "src", "mcp.mjs"), "utf8"),
+        readFile(join(outputRoot, "schemadeck", "src", "web-server.mjs"), "utf8"),
+        readFile(join(outputRoot, "schemadeck", "web", "app.js"), "utf8"),
+        readFile(join(outputRoot, "schemadeck", "web", "index.html"), "utf8"),
+      ]);
+      expect(client).toContain('"/api/suite/modules/" + manifest.module.id + "/records?"');
+      expect(client).toContain("limit > 100");
+      expect(client).toContain("recordDetail(value)");
+      expect(client).not.toContain('this.request("/api/suite/records?"');
+      expect(cli).toContain('command === "page"');
+      expect(cli).toContain('command === "detail"');
+      expect(mcp).toContain('detail: prefix + "_record_detail"');
+      expect(mcp).toContain("maximum: 100");
+      expect(webServer).toContain('url.searchParams.get("cursor")');
+      expect(webServer).toContain('url.pathname.startsWith("/product-api/records/")');
+      expect(webApp).toContain('query.set("search", state.recordQuery.trim())');
+      expect(webApp).toContain('query.set("state", state.recordState.trim())');
+      expect(webApp).toContain('query.set("cursor", cursor)');
+      expect(webApp).toContain('api("/product-api/records/" + encodeURIComponent(recordId))');
+      expect(webApp).not.toContain("JSON.stringify(record.data)");
+      expect(webHtml).toContain('id="load-more-records"');
+      expect(webHtml).toContain('id="record-state-filter"');
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }
