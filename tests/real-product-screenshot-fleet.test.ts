@@ -61,8 +61,7 @@ describe("real-backend product screenshot fleet", () => {
   beforeAll(async () => {
     generatedRoot = await mkdtemp(path.join(tmpdir(), "managed-oss-real-screenshots-"));
     await execFileAsync(process.execPath, ["--import", "tsx", generator, "--output", generatedRoot], { cwd: repositoryRoot, timeout: 30_000 });
-    const basePort = 54_000 + process.pid % 1_000;
-    child = spawn(process.execPath, ["--import", "tsx", fleet, generatedRoot, String(basePort)], {
+    child = spawn(process.execPath, ["--import", "tsx", fleet, generatedRoot, "0"], {
       cwd: repositoryRoot,
       env: { ...process.env, PRODUCT_WEB_KEY: "test-real-backend-screenshot-key-2026" },
       stdio: ["pipe", "pipe", "pipe"],

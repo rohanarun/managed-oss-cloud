@@ -11,12 +11,18 @@ import { suiteModules } from "../src/shared/suite.ts";
 
 const root = resolve(process.argv[2] ?? "");
 const basePort = Number(process.argv[3] ?? 4300);
-const backendPort = basePort - 1;
+const backendListenPort = basePort === 0 ? 0 : basePort - 1;
 const webKey = process.env.PRODUCT_WEB_KEY ?? "real-backend-screenshot-workspace-2026";
 
 if (!process.argv[2]) throw new Error("Usage: node --import tsx scripts/serve-real-product-screenshot-fleet.mjs <generated-product-root> [base-port]");
-if (!Number.isInteger(basePort) || backendPort < 1024 || basePort + 36 > 65535) throw new Error("The base port must leave room for the backend and 37 product servers.");
+if (!Number.isInteger(basePort) || basePort < 0 || (basePort !== 0 && (backendListenPort < 1024 || basePort + 36 > 65535))) throw new Error("The base port must be zero for OS-assigned ports or leave room for the backend and 37 product servers.");
 if (webKey.length < 24) throw new Error("PRODUCT_WEB_KEY must contain at least 24 characters.");
+
+function listeningPort(server) {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected a listening TCP server address.");
+  return address.port;
+}
 
 const directories = (await readdir(root, { withFileTypes: true }))
   .filter((entry) => entry.isDirectory())
@@ -33,8 +39,9 @@ const backend = createServer(await createApp({
 }));
 await new Promise((resolveListen, rejectListen) => {
   backend.once("error", rejectListen);
-  backend.listen(backendPort, "127.0.0.1", resolveListen);
+  backend.listen(backendListenPort, "127.0.0.1", resolveListen);
 });
+const backendPort = listeningPort(backend);
 const backendUrl = "http://127.0.0.1:" + backendPort;
 
 async function api(path, init) {
@@ -426,11 +433,12 @@ for (const [index, slug] of directories.entries()) {
   if (!durable) throw new Error(slug + " primary action did not create a durable backend record.");
 
   const server = createProductWebServer({ client, webKey });
-  const port = basePort + index;
+  const requestedPort = basePort === 0 ? 0 : basePort + index;
   await new Promise((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
-    server.listen(port, "127.0.0.1", resolveListen);
+    server.listen(requestedPort, "127.0.0.1", resolveListen);
   });
+  const port = listeningPort(server);
   servers.push(server);
   products.push({ slug, name: manifest.product.name, moduleId: manifest.module.id, recordId: durable.id, port, url: "http://127.0.0.1:" + port + "/" });
 }
