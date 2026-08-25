@@ -17,11 +17,11 @@ const defaultOutputRoot = "/Volumes/SP AI 01_16/managed-oss-product-repos";
 const sourceRelease = "v0.4.2";
 const sourceCommit = "20c4a704c77cbbbff1da995e1d91b937625a8aa4";
 const sourceSnapshotSha256 = "d0b7b1079d4924eb7369c788a979a707d45bb63470290e6ac33ee5662d78f69f";
-const generatedVersion = "0.1.1";
+const generatedVersion = "0.2.0";
 
 const products = [
   { slug: "pulseflow", command: "pulseflow", moduleId: "automate", name: "PulseFlow", tagline: "Governed automations with typed triggers, approvals, retries, and explainable AI repair.", accent: "#16d9b3", accentDark: "#087f6d" },
-  { slug: "signaldeck", command: "signaldeck", moduleId: "publish", name: "SignalDeck", tagline: "Plan, approve, publish, and explain multi-channel campaigns from one evidence trail.", accent: "#6ea8ff", accentDark: "#285eb5" },
+  { slug: "signaldeck", command: "signaldeck", moduleId: "publish", name: "SignalDeck", tagline: "Plan, approve, publish, and explain multi-channel campaigns from one evidence trail.", accent: "#6ea8ff", accentDark: "#285eb5", primaryActionId: "campaign-draft" },
   { slug: "relaydesk", command: "relaydesk", moduleId: "inbox", name: "RelayDesk", tagline: "A shared customer inbox with governed AI triage, response proposals, and SLA evidence.", accent: "#ff8c61", accentDark: "#ad4927" },
   { slug: "orbitcrm", command: "orbitcrm", moduleId: "crm", name: "OrbitCRM", tagline: "Relationship context, pipeline evidence, and AI-assisted next actions in a single workspace.", accent: "#9d84ff", accentDark: "#5b43b7" },
   { slug: "northstar-work", command: "northstar-work", moduleId: "tasks", name: "Northstar Work", tagline: "Turn outcomes into accountable projects, dependencies, sprints, and cited delivery insights.", accent: "#3fc8f4", accentDark: "#16708b" },
@@ -40,7 +40,7 @@ const products = [
   { slug: "searchproof", command: "searchproof", moduleId: "seo", name: "SearchProof", tagline: "Authorized rank evidence, safe site audits, and citation-grounded content briefs without invented metrics.", accent: "#6cb6ff", accentDark: "#285f9f" },
   { slug: "workledger", command: "workledger", moduleId: "finance", name: "WorkLedger", tagline: "Time entries, integer-money invoices, payment facts, and cited reconciliation proposals for independent businesses.", accent: "#71d586", accentDark: "#2c7740" },
   { slug: "signalmesh", command: "signalmesh", moduleId: "notify", name: "SignalMesh", tagline: "Typed product events, preference-aware delivery, exact workflows, and explainable suppression evidence.", accent: "#ff9a68", accentDark: "#a94f29" },
-  { slug: "talentledger", command: "talentledger", moduleId: "hire", name: "TalentLedger", tagline: "Versioned jobs, structured applications, candidate rights, and review-only AI summaries without automated hiring decisions.", accent: "#b493ff", accentDark: "#6543a8" },
+  { slug: "talentledger", command: "talentledger", moduleId: "hire", name: "TalentLedger", tagline: "Versioned jobs, structured applications, candidate rights, and review-only AI summaries without automated hiring decisions.", accent: "#b493ff", accentDark: "#6543a8", primaryActionId: "job-draft" },
   { slug: "canvasforge", command: "canvasforge", moduleId: "collab", name: "CanvasForge", tagline: "Structured collaborative documents with immutable revisions, controlled sharing, and approval-gated AI patches.", accent: "#55d4e8", accentDark: "#177789" },
   { slug: "slotline", command: "slotline", moduleId: "schedule", name: "Slotline", tagline: "Conflict-aware availability, deterministic routing, bookings, and cited calendar reconciliation.", accent: "#ffc75c", accentDark: "#8d6715" },
   { slug: "intakeforge", command: "intakeforge", moduleId: "forms", name: "IntakeForge", tagline: "Accessible versioned forms with deterministic logic, privacy controls, corrections, and grounded summaries.", accent: "#ef84b4", accentDark: "#98436b" },
@@ -134,8 +134,83 @@ function sampleForSchema(schema, name = "value") {
   }
 }
 
+function materializeExampleInput(value, schema, name = "value") {
+  if (typeof value === "string" && /^<[^<>]+>$/.test(value)) return sampleForSchema(schema, name);
+  if (Array.isArray(value)) return value.map((item) => materializeExampleInput(item, schema?.items ?? {}, name));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      materializeExampleInput(item, schema?.properties?.[key] ?? {}, key),
+    ]));
+  }
+  return value;
+}
+
+function humanizeIdentifier(value) {
+  return String(value ?? "")
+    .replaceAll(/[-_]+/g, " ")
+    .replaceAll(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function actionExperienceGroup(action) {
+  const haystack = [action.id, action.title, action.description].join(" ").toLowerCase();
+  if (action.requiredScope === "ai" || action.operation === "ai") return "AI assistance";
+  if (action.operation === "create" || /^(create|open|start|upsert|register|draft|record|submit|enroll|issue)\b/.test(action.title.toLowerCase())) return "Create and capture";
+  if (/approve|review|publish|final|release|moderate|sign|verify|audit|test|draw|decide/.test(haystack)) return "Review and approve";
+  if (/create|open|start|upsert|register|draft|record|submit|enroll|issue/.test(haystack)) return "Create and capture";
+  if (action.operation === "read" || /list|read|export|report|status|preview|inspect|reconcile/.test(haystack)) return "Inspect and report";
+  return "Operate and update";
+}
+
+function productExperience(product, module, actions) {
+  const recordTypes = [...new Set([
+    ...(module.recordTypes ?? []),
+    ...actions.map((action) => action.recordType).filter(Boolean),
+  ])];
+  const nonAiActions = actions.filter((action) => action.requiredScope !== "ai" && action.operation !== "ai");
+  const primaryAction = actions.find((action) => action.id === product.primaryActionId) ?? nonAiActions[0] ?? actions[0];
+  const sampleStates = ["active", "in review", "ready", "scheduled", "draft", "complete"];
+  const sampleSuffixes = ["Launch", "Operations", "Evidence", "Review", "Pilot", "Archive"];
+  const sampleRecords = recordTypes.slice(0, 8).map((recordType, index) => ({
+    id: "demo-" + module.id + "-" + String(index + 1).padStart(2, "0"),
+    moduleId: module.id,
+    recordType,
+    title: humanizeIdentifier(recordType) + " " + sampleSuffixes[index % sampleSuffixes.length],
+    state: sampleStates[index % sampleStates.length],
+    createdAt: new Date(Date.UTC(2026, 7, 18 + index, 13, 30)).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 7, 25, 13 - index, 15)).toISOString(),
+    data: {
+      owner: index % 2 === 0 ? "Operations" : "Product",
+      evidenceStatus: index % 3 === 0 ? "verified" : "current",
+      nextStep: actions[index % actions.length]?.title ?? "Review record",
+    },
+  }));
+  return {
+    releaseBoundary: "Complete for every typed action declared by this product manifest; it does not claim feature parity with unrelated third-party products.",
+    headline: product.tagline.split(",")[0].replace(/[.]$/, ""),
+    primaryActionId: primaryAction.id,
+    quickActionIds: nonAiActions.slice(0, 4).map((action) => action.id),
+    navigation: ["Overview", "Records", "Workflows", "AI assistance", "Settings"],
+    workflowGroups: ["Create and capture", "Operate and update", "Review and approve", "Inspect and report", "AI assistance"].map((name) => ({
+      name,
+      actionIds: actions.filter((action) => actionExperienceGroup(action) === name).map((action) => action.id),
+    })).filter((group) => group.actionIds.length > 0),
+    metrics: [
+      { label: "Typed actions", value: actions.length },
+      { label: "Record types", value: recordTypes.length },
+      { label: "AI workflows", value: actions.filter((action) => action.requiredScope === "ai").length },
+      { label: "Review gates", value: actions.filter((action) => actionExperienceGroup(action) === "Review and approve").length },
+    ],
+    sampleRecords,
+  };
+}
+
 function productManifest(product, module, actions) {
   const mcpPrefix = product.slug.replaceAll("-", "_");
+  const recordTypes = [...new Set([
+    ...(module.recordTypes ?? []),
+    ...actions.map((action) => action.recordType).filter(Boolean),
+  ])];
   return {
     schemaVersion: 1,
     release: {
@@ -165,7 +240,7 @@ function productManifest(product, module, actions) {
       minimumHostedPlan: module.minPlan,
       resourceClass: module.resourceClass,
       resourceRequirements: module.resourceRequirements,
-      recordTypes: module.recordTypes,
+      recordTypes,
       aiCapabilities: module.aiCapabilities,
       scaleGuidance: module.scaleGuidance,
       externalUsage: module.externalUsage,
@@ -181,9 +256,13 @@ function productManifest(product, module, actions) {
       statement: "Original clean-room implementation of the " + module.category.toLowerCase() + " software category, designed and written independently.",
       sourceBoundary: "Public category behavior informed requirements; implementation and product identity are original.",
     },
+    experience: productExperience(product, module, actions),
     actions: actions.map((action) => {
       const inputSchema = suiteActionInputJsonSchema(action);
-      const exampleInput = action.exampleInput ?? suiteActionExampleInput(action) ?? sampleForSchema(inputSchema);
+      const exampleInput = materializeExampleInput(
+        action.exampleInput ?? suiteActionExampleInput(action) ?? sampleForSchema(inputSchema),
+        inputSchema,
+      );
       return {
         ...action,
         inputSchema,
@@ -426,6 +505,120 @@ export function clientFromEnvironment(env = process.env, fetchImpl = fetch) {
 }
 `;
 
+const demoClientSource = String.raw`import { randomUUID } from "node:crypto";
+import { actionById, manifest } from "./manifest.mjs";
+import { validateInput } from "./validation.mjs";
+
+function clone(value) {
+  return structuredClone(value);
+}
+
+function titleForAction(action, input) {
+  const preferredKeys = [action.titleField, "name", "title", "subject", "label", "slug", "externalKey"].filter(Boolean);
+  for (const key of preferredKeys) {
+    if (typeof input[key] === "string" && input[key].trim()) return input[key].trim();
+  }
+  return action.title;
+}
+
+export class DemoProductClient {
+  constructor() {
+    this.records = clone(manifest.experience.sampleRecords ?? []);
+    this.aiActions = new Map();
+    this.enabled = true;
+  }
+
+  async workspace() {
+    return {
+      workspace: {
+        id: "demo-workspace",
+        slug: "sample-workspace",
+        name: "Sample workspace",
+        plan: manifest.module.minimumHostedPlan,
+        enabledModuleIds: this.enabled ? [manifest.module.id] : [],
+      },
+      usage: {
+        recordCount: this.records.length,
+        aiActionsThisMonth: this.aiActions.size,
+        storageBytes: 0,
+      },
+      demo: true,
+    };
+  }
+
+  async enable() {
+    this.enabled = true;
+    return { enabled: true, moduleId: manifest.module.id, demo: true };
+  }
+
+  async listRecords(options = {}) {
+    const records = this.records
+      .filter((record) => !options.recordType || record.recordType === options.recordType)
+      .slice(0, options.limit ?? 50);
+    return { records: clone(records), demo: true };
+  }
+
+  async aiStatus(actionId) {
+    const action = this.aiActions.get(actionId);
+    if (!action) {
+      const error = new Error("Demo AI action not found.");
+      error.status = 404;
+      throw error;
+    }
+    return { action: clone(action), demo: true };
+  }
+
+  async runAction(actionId, input) {
+    const action = actionById.get(actionId);
+    if (!action) throw new Error("Unknown " + manifest.product.name + " action: " + actionId + ".");
+    validateInput(action.inputSchema, input);
+    const now = new Date().toISOString();
+    if (action.requiredScope === "ai" || action.operation === "ai") {
+      const aiAction = {
+        id: randomUUID(),
+        moduleId: manifest.module.id,
+        actionId: action.id,
+        status: "completed",
+        goal: action.title,
+        result: { proposal: "Sample evidence-bound proposal", evidenceRecordIds: this.records.slice(0, 2).map((record) => record.id) },
+        createdAt: now,
+        completedAt: now,
+      };
+      this.aiActions.set(aiAction.id, aiAction);
+      return { kind: "ai-action", action, aiAction: clone(aiAction), records: clone(this.records.slice(0, 2)), demo: true };
+    }
+
+    const referenced = Object.values(input).filter((value) => typeof value === "string").find((value) => this.records.some((record) => record.id === value));
+    const recordType = action.recordType || manifest.module.recordTypes[0] || "record";
+    let record = referenced ? this.records.find((candidate) => candidate.id === referenced) : undefined;
+    if (action.operation === "create" || !record) {
+      record = {
+        id: randomUUID(),
+        moduleId: manifest.module.id,
+        recordType,
+        title: titleForAction(action, input),
+        state: action.resultingState || "active",
+        data: { ...clone(input), lastActionId: action.id, evidenceStatus: "sample" },
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.records.unshift(record);
+    } else {
+      record = { ...record, state: action.resultingState || record.state, data: { ...record.data, ...clone(input), lastActionId: action.id }, updatedAt: now };
+      this.records = this.records.map((candidate) => candidate.id === record.id ? record : candidate);
+    }
+    return {
+      kind: action.operation === "read" ? "read" : action.operation === "create" ? "record" : "command",
+      action,
+      record: action.operation === "create" ? clone(record) : undefined,
+      records: action.operation === "create" ? undefined : [clone(record)],
+      audit: { demo: true, executedAt: now, actionId: action.id },
+      demo: true,
+    };
+  }
+}
+`;
+
 const cliSource = String.raw`#!/usr/bin/env node
 import { actionById, actions, manifest } from "./manifest.mjs";
 import { clientFromEnvironment } from "./client.mjs";
@@ -657,6 +850,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clientFromEnvironment } from "./client.mjs";
+import { DemoProductClient } from "./demo-client.mjs";
 import { manifest } from "./manifest.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -720,7 +914,7 @@ export function createProductWebServer({ client, webKey }) {
         const content = await readFile(join(webRoot, file));
         response.writeHead(200, {
           "Content-Type": contentType,
-          "Cache-Control": file === "index.html" ? "no-store" : "public, max-age=300",
+          "Cache-Control": "no-store",
           "Content-Security-Policy": "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'",
           "X-Content-Type-Options": "nosniff",
           "Referrer-Policy": "no-referrer",
@@ -753,12 +947,13 @@ export async function startWebServer(env = process.env) {
   const host = env.HOST ?? "127.0.0.1";
   const port = Number(env.PORT ?? 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer from 1 to 65535.");
-  const server = createProductWebServer({ client: clientFromEnvironment(env), webKey: webKeyFromEnvironment(env) });
+  const demoMode = env.PRODUCT_DEMO_MODE === "true";
+  const server = createProductWebServer({ client: demoMode ? new DemoProductClient() : clientFromEnvironment(env), webKey: webKeyFromEnvironment(env) });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, resolve);
   });
-  process.stdout.write(manifest.product.name + " web UI listening on http://" + host + ":" + port + "\n");
+  process.stdout.write(manifest.product.name + " web UI listening on http://" + host + ":" + port + (demoMode ? " in sample workspace mode" : "") + "\n");
   return server;
 }
 
@@ -770,13 +965,73 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 }
 `;
 
-const webAppSource = String.raw`const state = { manifest: null, webKey: sessionStorage.getItem("product-web-key") ?? "" };
-const byId = (id) => document.getElementById(id);
+const demoServerSource = String.raw`#!/usr/bin/env node
+import { startWebServer } from "./web-server.mjs";
 
-function show(value, kind = "neutral") {
-  const panel = byId("output");
-  panel.dataset.kind = kind;
-  panel.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+const env = {
+  ...process.env,
+  PRODUCT_DEMO_MODE: "true",
+  PRODUCT_WEB_KEY: process.env.PRODUCT_WEB_KEY ?? "sample-workspace-key-2026",
+};
+
+startWebServer(env).catch((error) => {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\n");
+  process.exitCode = 1;
+});
+`;
+
+const webAppSource = String.raw`const state = {
+  manifest: null,
+  webKey: sessionStorage.getItem("product-web-key") ?? "",
+  workspace: null,
+  records: [],
+  activities: [],
+  connected: false,
+  demo: false,
+  activeView: "overview",
+  selectedAction: null,
+  recordQuery: "",
+  recordType: "all",
+};
+
+const byId = (id) => document.getElementById(id);
+const queryAll = (selector, root = document) => [...root.querySelectorAll(selector)];
+
+function humanize(value) {
+  return String(value ?? "").replaceAll(/[-_]+/g, " ").replaceAll(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function shortDate(value) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date) : "Not dated";
+}
+
+function make(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+
+function clear(element) {
+  element.replaceChildren();
+  return element;
+}
+
+function toast(message, kind = "neutral") {
+  const item = make("div", "toast", message);
+  item.dataset.kind = kind;
+  byId("toast-root").append(item);
+  requestAnimationFrame(() => item.dataset.visible = "true");
+  setTimeout(() => {
+    item.dataset.visible = "false";
+    setTimeout(() => item.remove(), 220);
+  }, 4200);
+}
+
+function setBusy(isBusy, label = "Working") {
+  document.body.dataset.busy = String(isBusy);
+  byId("busy-label").textContent = label;
 }
 
 async function api(path, options = {}, authenticated = true) {
@@ -785,75 +1040,438 @@ async function api(path, options = {}, authenticated = true) {
   if (options.body) headers.set("Content-Type", "application/json");
   if (authenticated) headers.set("X-Product-Web-Key", state.webKey);
   const response = await fetch(path, { ...options, headers });
-  const body = await response.json();
+  let body;
+  try { body = await response.json(); } catch { body = { error: "The server returned a non-JSON response." }; }
   if (!response.ok) throw new Error(body.error ?? "Request failed with HTTP " + response.status + ".");
   return body;
 }
 
-function actionOption(action) {
-  const option = document.createElement("option");
-  option.value = action.id;
-  option.textContent = action.title + " [" + action.requiredScope + "]";
-  return option;
+function workspaceValue() {
+  return state.workspace?.workspace ?? state.workspace ?? {};
 }
 
-function selectAction() {
-  const action = state.manifest.actions.find((item) => item.id === byId("action").value);
-  byId("action-description").textContent = action.description;
-  byId("action-input").value = JSON.stringify(action.exampleInput ?? {}, null, 2);
+function setConnection(connected) {
+  state.connected = connected;
+  const status = byId("connection-state");
+  status.textContent = connected ? state.demo ? "Sample workspace" : "Connected" : "Connect";
+  status.dataset.connected = String(connected);
+  byId("connect-trigger").textContent = connected ? state.demo ? "Sample workspace" : "Workspace connected" : "Connect workspace";
+  byId("sample-banner").hidden = !state.demo;
+}
+
+function activateView(view) {
+  state.activeView = view;
+  queryAll("[data-view]").forEach((button) => {
+    const selected = button.dataset.view === view;
+    button.dataset.active = String(selected);
+    button.setAttribute("aria-current", selected ? "page" : "false");
+  });
+  queryAll(".view").forEach((section) => { section.hidden = section.id !== "view-" + view; });
+  byId("current-view").textContent = humanize(view);
+  if (view === "records") renderRecords();
+  if (view === "workflows") renderWorkflows();
+  if (view === "ai") renderAi();
+  if (view === "settings") renderSettings();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function actionButton(action, className = "action-row") {
+  const button = make("button", className);
+  button.type = "button";
+  button.dataset.actionId = action.id;
+  const copy = make("span", "action-copy");
+  copy.append(make("strong", "", action.title), make("small", "", action.description));
+  const scope = make("span", "scope", action.requiredScope);
+  button.append(copy, scope);
+  button.addEventListener("click", () => openAction(action.id));
+  return button;
 }
 
 function renderManifest(manifest) {
   state.manifest = manifest;
-  document.title = manifest.product.name;
+  document.title = manifest.product.name + " — Workspace";
   byId("product-name").textContent = manifest.product.name;
-  byId("tagline").textContent = manifest.product.tagline;
-  byId("category").textContent = manifest.module.category;
-  byId("plan").textContent = manifest.module.minimumHostedPlan;
-  byId("action-count").textContent = String(manifest.actions.length);
-  byId("module-id").textContent = manifest.module.id;
-  byId("action").replaceChildren(...manifest.actions.map(actionOption));
-  selectAction();
+  byId("product-category").textContent = manifest.module.category;
+  byId("hero-title").textContent = manifest.experience.headline;
+  byId("hero-description").textContent = manifest.module.description;
+  byId("module-plan").textContent = humanize(manifest.module.minimumHostedPlan) + " plan";
+  document.body.style.setProperty("--accent", manifest.product.accent);
+  document.body.style.setProperty("--accent-dark", manifest.product.accentDark);
+
+  const quickActions = clear(byId("quick-actions"));
+  for (const actionId of manifest.experience.quickActionIds ?? []) {
+    const action = manifest.actions.find((candidate) => candidate.id === actionId);
+    if (action) quickActions.append(actionButton(action, "quick-action"));
+  }
+  const primary = manifest.actions.find((action) => action.id === manifest.experience.primaryActionId) ?? manifest.actions[0];
+  byId("primary-action-label").textContent = primary.title;
+  byId("primary-action").onclick = () => openAction(primary.id);
+
+  const filters = clear(byId("record-type-filter"));
+  const all = document.createElement("option");
+  all.value = "all";
+  all.textContent = "All record types";
+  filters.append(all);
+  for (const recordType of manifest.module.recordTypes) {
+    const option = document.createElement("option");
+    option.value = recordType;
+    option.textContent = humanize(recordType);
+    filters.append(option);
+  }
+  renderMetrics();
+  renderWorkflows();
+  renderAi();
+  renderSettings();
+}
+
+function renderMetrics() {
+  if (!state.manifest) return;
+  const metrics = clear(byId("metric-grid"));
+  const liveValues = new Map([
+    ["Typed actions", state.manifest.actions.length],
+    ["Record types", new Set(state.records.map((record) => record.recordType)).size || state.manifest.module.recordTypes.length],
+    ["Workspace records", state.records.length],
+    ["Review gates", state.manifest.experience.metrics.find((metric) => metric.label === "Review gates")?.value ?? 0],
+  ]);
+  for (const [label, value] of liveValues) {
+    const card = make("article", "metric-card");
+    card.append(make("span", "metric-value", String(value).padStart(2, "0")), make("span", "metric-label", label));
+    metrics.append(card);
+  }
+}
+
+function recordCard(record, compact = false) {
+  const card = make("button", compact ? "record-card compact" : "record-card");
+  card.type = "button";
+  const top = make("span", "record-card-top");
+  top.append(make("span", "record-type", humanize(record.recordType)), make("span", "record-state", humanize(record.state || "current")));
+  card.append(top, make("strong", "record-title", record.title || humanize(record.recordType)), make("span", "record-date", "Updated " + shortDate(record.updatedAt)));
+  card.addEventListener("click", () => openRecord(record));
+  return card;
+}
+
+function renderRecentRecords() {
+  const target = clear(byId("recent-records"));
+  const records = state.records.slice(0, 5);
+  if (!records.length) {
+    target.append(make("p", "empty-state", state.connected ? "No records yet. Run the primary workflow to create the first one." : "Connect a workspace to load current records."));
+    return;
+  }
+  records.forEach((record) => target.append(recordCard(record, true)));
+}
+
+function filteredRecords() {
+  const query = state.recordQuery.trim().toLowerCase();
+  return state.records.filter((record) => {
+    if (state.recordType !== "all" && record.recordType !== state.recordType) return false;
+    if (!query) return true;
+    return [record.title, record.recordType, record.state, JSON.stringify(record.data)].some((value) => String(value ?? "").toLowerCase().includes(query));
+  });
+}
+
+function renderRecords() {
+  const records = filteredRecords();
+  byId("record-count").textContent = records.length + (records.length === 1 ? " record" : " records");
+  const grid = clear(byId("record-grid"));
+  if (!records.length) {
+    grid.append(make("p", "empty-state wide", state.connected ? "No records match this view." : "Connect a workspace to inspect records."));
+    return;
+  }
+  records.forEach((record) => grid.append(recordCard(record)));
+}
+
+function renderWorkflows() {
+  if (!state.manifest) return;
+  const target = clear(byId("workflow-groups"));
+  for (const [index, group] of state.manifest.experience.workflowGroups.entries()) {
+    const section = make("section", "workflow-group");
+    const trigger = make("button", "workflow-trigger");
+    trigger.type = "button";
+    trigger.setAttribute("aria-expanded", String(index === 0));
+    trigger.append(make("span", "workflow-index", String(index + 1).padStart(2, "0")), make("strong", "", group.name), make("span", "workflow-count", group.actionIds.length + " workflows"));
+    const body = make("div", "workflow-body");
+    body.hidden = index !== 0;
+    for (const actionId of group.actionIds) {
+      const action = state.manifest.actions.find((candidate) => candidate.id === actionId);
+      if (action) body.append(actionButton(action));
+    }
+    trigger.addEventListener("click", () => {
+      const expanded = trigger.getAttribute("aria-expanded") === "true";
+      trigger.setAttribute("aria-expanded", String(!expanded));
+      body.hidden = expanded;
+    });
+    section.append(trigger, body);
+    target.append(section);
+  }
+}
+
+function renderAi() {
+  if (!state.manifest) return;
+  const target = clear(byId("ai-actions"));
+  const actions = state.manifest.actions.filter((action) => action.requiredScope === "ai" || action.operation === "ai");
+  if (!actions.length) {
+    target.append(make("p", "empty-state wide", "This product keeps every declared workflow deterministic and does not expose an AI action."));
+    return;
+  }
+  actions.forEach((action) => target.append(actionButton(action, "ai-card")));
+}
+
+function renderSettings() {
+  if (!state.manifest) return;
+  byId("settings-boundary").textContent = state.manifest.experience.releaseBoundary;
+  byId("settings-module").textContent = state.manifest.module.id;
+  byId("settings-plan").textContent = state.manifest.module.minimumHostedPlan;
+  byId("settings-resource").textContent = state.manifest.module.resourceClass;
+  byId("settings-version").textContent = state.manifest.release.productVersion;
+  const capabilities = clear(byId("capability-list"));
+  state.manifest.module.aiCapabilities.forEach((capability) => capabilities.append(make("li", "", capability)));
+}
+
+function openRecord(record) {
+  byId("record-detail-title").textContent = record.title || humanize(record.recordType);
+  byId("record-detail-meta").textContent = humanize(record.recordType) + " · " + humanize(record.state || "current") + " · Updated " + shortDate(record.updatedAt);
+  byId("record-detail-json").textContent = JSON.stringify(record, null, 2);
+  byId("record-dialog").showModal();
+}
+
+function fieldDescription(schema) {
+  return schema.description || (schema.format ? "Required format: " + schema.format + "." : "Typed input enforced by the product action contract.");
+}
+
+function createField(name, schema, value, required) {
+  const group = make("div", "field-group");
+  const label = make("label", "field-label");
+  label.htmlFor = "field-" + name;
+  label.append(document.createTextNode(humanize(name)));
+  if (required) label.append(make("span", "required", "Required"));
+  let control;
+  if (Array.isArray(schema.enum)) {
+    control = document.createElement("select");
+    for (const optionValue of schema.enum) {
+      const option = document.createElement("option");
+      option.value = String(optionValue);
+      option.textContent = humanize(optionValue);
+      option.selected = optionValue === value;
+      control.append(option);
+    }
+  } else if (schema.type === "boolean") {
+    const wrapper = make("label", "toggle");
+    control = document.createElement("input");
+    control.type = "checkbox";
+    control.checked = value === true;
+    wrapper.append(control, make("span", "toggle-track"), make("span", "toggle-copy", "Enabled"));
+    label.htmlFor = "";
+    group.append(label, wrapper, make("p", "field-help", fieldDescription(schema)));
+  } else if (schema.type === "array" || schema.type === "object" || (schema.type === "string" && (schema.maxLength ?? 0) > 320)) {
+    control = document.createElement("textarea");
+    control.rows = schema.type === "string" ? 4 : 5;
+    control.value = schema.type === "string" ? value ?? "" : JSON.stringify(value ?? (schema.type === "array" ? [] : {}), null, 2);
+    control.dataset.json = schema.type === "string" ? "false" : "true";
+  } else {
+    control = document.createElement("input");
+    control.type = schema.type === "integer" || schema.type === "number" ? "number" : schema.format === "email" ? "email" : schema.format === "date-time" ? "datetime-local" : schema.format === "uri" ? "url" : "text";
+    if (schema.minimum !== undefined) control.min = String(schema.minimum);
+    if (schema.maximum !== undefined) control.max = String(schema.maximum);
+    if (schema.maxLength !== undefined) control.maxLength = schema.maxLength;
+    if (value !== undefined && value !== null) control.value = schema.format === "date-time" ? String(value).replace(/Z$/, "").slice(0, 16) : String(value);
+    if (schema.format === "uuid" || /Id$/.test(name)) {
+      control.setAttribute("list", "record-identifiers");
+      control.placeholder = "Select or paste a record ID";
+    }
+  }
+  control.id = "field-" + name;
+  control.name = name;
+  control.dataset.schemaType = schema.type ?? "string";
+  control.required = required;
+  if (schema.type !== "boolean") group.append(label, control, make("p", "field-help", fieldDescription(schema)));
+  return group;
+}
+
+function buildActionForm(action) {
+  const form = clear(byId("action-form"));
+  const required = new Set(action.inputSchema.required ?? []);
+  const example = action.exampleInput ?? {};
+  for (const [name, schema] of Object.entries(action.inputSchema.properties ?? {})) form.append(createField(name, schema, example[name], required.has(name)));
+  byId("action-json").value = JSON.stringify(example, null, 2);
+  form.addEventListener("input", () => {
+    try { byId("action-json").value = JSON.stringify(collectActionInput(action), null, 2); } catch { }
+  });
+}
+
+function collectActionInput(action) {
+  if (byId("advanced-input").open) {
+    let parsed;
+    try { parsed = JSON.parse(byId("action-json").value); } catch { throw new Error("Advanced JSON input must be valid JSON."); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Advanced JSON input must be an object.");
+    return parsed;
+  }
+  const input = {};
+  const required = new Set(action.inputSchema.required ?? []);
+  for (const [name, schema] of Object.entries(action.inputSchema.properties ?? {})) {
+    const control = byId("field-" + name);
+    if (!control) continue;
+    if (schema.type === "boolean") {
+      input[name] = control.checked;
+      continue;
+    }
+    if (!control.value && !required.has(name)) continue;
+    if (control.dataset.json === "true") {
+      try { input[name] = JSON.parse(control.value); } catch { throw new Error(humanize(name) + " must contain valid JSON."); }
+    } else if (schema.type === "integer" || schema.type === "number") input[name] = Number(control.value);
+    else if (schema.format === "date-time" && control.value) input[name] = new Date(control.value).toISOString();
+    else input[name] = control.value;
+  }
+  return input;
+}
+
+function openAction(actionId) {
+  const action = state.manifest.actions.find((candidate) => candidate.id === actionId);
+  if (!action) return;
+  state.selectedAction = action;
+  byId("action-dialog-title").textContent = action.title;
+  byId("action-dialog-description").textContent = action.description;
+  byId("action-scope").textContent = action.requiredScope + " scope";
+  byId("action-operation").textContent = humanize(action.operation);
+  byId("advanced-input").open = false;
+  byId("action-result").hidden = true;
+  buildActionForm(action);
+  byId("action-dialog").showModal();
+}
+
+function addActivity(action, result) {
+  state.activities.unshift({ actionId: action.id, title: action.title, status: result.kind === "ai-action" ? "proposal ready" : "completed", at: new Date().toISOString() });
+  state.activities = state.activities.slice(0, 12);
+  renderActivity();
+}
+
+function renderActivity() {
+  const target = clear(byId("activity-list"));
+  const items = state.activities.length ? state.activities : (state.records.slice(0, 4).map((record) => ({ title: "Updated " + humanize(record.recordType), status: record.state || "current", at: record.updatedAt })));
+  if (!items.length) return target.append(make("p", "empty-state", "Recent workflow activity will appear here."));
+  for (const item of items) {
+    const row = make("div", "activity-row");
+    row.append(make("span", "activity-dot"), make("strong", "", item.title), make("span", "activity-status", humanize(item.status)), make("time", "", shortDate(item.at)));
+    target.append(row);
+  }
+}
+
+async function refreshRecords() {
+  if (!state.connected) return;
+  const response = await api("/product-api/records?limit=200");
+  state.records = Array.isArray(response.records) ? response.records : [];
+  renderMetrics();
+  renderRecentRecords();
+  renderRecords();
+  renderActivity();
+  const identifiers = clear(byId("record-identifiers"));
+  state.records.forEach((record) => {
+    const option = document.createElement("option");
+    option.value = record.id;
+    option.label = (record.title || humanize(record.recordType)) + " — " + humanize(record.recordType);
+    identifiers.append(option);
+  });
 }
 
 async function connect() {
-  state.webKey = byId("web-key").value;
-  sessionStorage.setItem("product-web-key", state.webKey);
-  const workspace = await api("/product-api/workspace");
-  byId("connection-state").textContent = "Connected";
-  byId("connection-state").dataset.connected = "true";
-  show(workspace, "success");
+  const key = byId("web-key").value.trim();
+  if (key.length < 24) throw new Error("Enter the separate browser access key configured for this product server.");
+  state.webKey = key;
+  sessionStorage.setItem("product-web-key", key);
+  state.workspace = await api("/product-api/workspace");
+  state.demo = state.workspace.demo === true;
+  setConnection(true);
+  byId("connect-dialog").close();
+  await refreshRecords();
+  const workspace = workspaceValue();
+  byId("workspace-name").textContent = workspace.name || workspace.slug || "Private workspace";
+  toast(state.demo ? "Sample workspace loaded." : "Workspace connected.", "success");
 }
 
-async function runAction() {
-  let input;
-  try { input = JSON.parse(byId("action-input").value); } catch { throw new Error("Action input must be valid JSON."); }
-  show("Running action...");
-  const result = await api("/product-api/actions/" + encodeURIComponent(byId("action").value), { method: "POST", body: JSON.stringify({ input }) });
-  show(result, "success");
+async function executeSelectedAction(event) {
+  event.preventDefault();
+  if (!state.connected) {
+    byId("connect-dialog").showModal();
+    toast("Connect the product server before running a workflow.", "error");
+    return;
+  }
+  const action = state.selectedAction;
+  const input = collectActionInput(action);
+  setBusy(true, "Running " + action.title);
+  try {
+    const result = await api("/product-api/actions/" + encodeURIComponent(action.id), { method: "POST", body: JSON.stringify({ input }) });
+    addActivity(action, result);
+    byId("action-result").hidden = false;
+    byId("action-result-json").textContent = JSON.stringify(result, null, 2);
+    await refreshRecords();
+    toast(action.title + " completed.", "success");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function invoke(work) {
-  try { await work(); } catch (error) { show(error instanceof Error ? error.message : String(error), "error"); }
+  try { await work(); }
+  catch (error) {
+    toast(error instanceof Error ? error.message : String(error), "error");
+    setBusy(false);
+  }
 }
 
-byId("web-key").value = state.webKey;
+queryAll("[data-view]").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
+byId("connect-trigger").addEventListener("click", () => byId("connect-dialog").showModal());
+byId("connect-cancel").addEventListener("click", () => byId("connect-dialog").close());
 byId("connect").addEventListener("click", () => invoke(connect));
 byId("disconnect").addEventListener("click", () => {
   state.webKey = "";
+  state.workspace = null;
+  state.records = [];
+  state.demo = false;
   sessionStorage.removeItem("product-web-key");
   byId("web-key").value = "";
-  byId("connection-state").textContent = "Disconnected";
-  byId("connection-state").dataset.connected = "false";
-  show("Local browser access cleared.");
+  setConnection(false);
+  renderMetrics();
+  renderRecentRecords();
+  renderRecords();
+  byId("connect-dialog").close();
+  toast("Browser access cleared.");
 });
-byId("enable").addEventListener("click", () => invoke(async () => show(await api("/product-api/enable", { method: "POST" }), "success")));
-byId("records").addEventListener("click", () => invoke(async () => show(await api("/product-api/records?limit=50"), "success")));
-byId("workspace").addEventListener("click", () => invoke(async () => show(await api("/product-api/workspace"), "success")));
-byId("action").addEventListener("change", selectAction);
-byId("run-action").addEventListener("click", () => invoke(runAction));
+byId("enable-product").addEventListener("click", () => invoke(async () => {
+  if (!state.connected) return byId("connect-dialog").showModal();
+  await api("/product-api/enable", { method: "POST" });
+  state.workspace = await api("/product-api/workspace");
+  toast("Product enabled for this workspace.", "success");
+}));
+byId("refresh-records").addEventListener("click", () => invoke(refreshRecords));
+byId("view-all-records").addEventListener("click", () => activateView("records"));
+byId("record-query").addEventListener("input", (event) => { state.recordQuery = event.target.value; renderRecords(); });
+byId("record-type-filter").addEventListener("change", (event) => { state.recordType = event.target.value; renderRecords(); });
+byId("action-execute").addEventListener("click", executeSelectedAction);
+byId("action-close").addEventListener("click", () => byId("action-dialog").close());
+byId("record-close").addEventListener("click", () => byId("record-dialog").close());
+byId("global-search").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  state.recordQuery = event.currentTarget.value;
+  byId("record-query").value = state.recordQuery;
+  activateView("records");
+});
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    byId("global-search").focus();
+  }
+});
 
-invoke(async () => renderManifest(await api("/manifest", {}, false)));
+invoke(async () => {
+  const manifest = await api("/manifest", {}, false);
+  renderManifest(manifest);
+  byId("web-key").value = state.webKey;
+  setConnection(false);
+  renderRecentRecords();
+  renderRecords();
+  renderActivity();
+  activateView("overview");
+  if (state.webKey.length >= 24) await connect();
+});
 `;
 
 const indexTemplate = String.raw`<!doctype html>
@@ -862,104 +1480,381 @@ const indexTemplate = String.raw`<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>__PRODUCT_NAME__</title>
-  <link rel="stylesheet" href="/styles.css">
+  <meta name="description" content="__TAGLINE__">
+  <title>__PRODUCT_NAME__ — Workspace</title>
+  <link rel="stylesheet" href="/styles.css?v=__VERSION__">
 </head>
-<body style="--accent: __ACCENT__; --accent-dark: __ACCENT_DARK__">
-  <main>
-    <nav>
-      <a class="brand" href="/" aria-label="__PRODUCT_NAME__ home"><span class="mark"></span><span id="product-name">__PRODUCT_NAME__</span></a>
-      <div class="state"><span class="state-dot"></span><span id="connection-state" data-connected="false">Disconnected</span></div>
-    </nav>
+<body>
+  <div class="busy-overlay" aria-live="polite"><span class="busy-spinner"></span><span id="busy-label">Working</span></div>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
 
-    <header>
-      <div>
-        <p class="eyebrow">PRIVATE BUSINESS WORKSPACE</p>
-        <h1 id="tagline">__TAGLINE__</h1>
+  <aside class="side-nav">
+    <a class="brand" href="/" aria-label="__PRODUCT_NAME__ home">
+      <span class="mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span><strong id="product-name">__PRODUCT_NAME__</strong><small id="product-category">__CATEGORY__</small></span>
+    </a>
+    <nav aria-label="Product workspace">
+      <button type="button" data-view="overview" data-active="true"><span class="nav-glyph">O</span>Overview</button>
+      <button type="button" data-view="records"><span class="nav-glyph">R</span>Records</button>
+      <button type="button" data-view="workflows"><span class="nav-glyph">W</span>Workflows</button>
+      <button type="button" data-view="ai"><span class="nav-glyph">A</span>AI assistance</button>
+      <button type="button" data-view="settings"><span class="nav-glyph">S</span>Settings</button>
+    </nav>
+    <div class="nav-footer">
+      <div class="connection-state"><span class="state-dot"></span><span id="connection-state" data-connected="false">Connect</span></div>
+      <button id="connect-trigger" class="connect-button" type="button">Connect workspace</button>
+      <p>Private API access stays on this server.</p>
+    </div>
+  </aside>
+
+  <main class="workspace-shell">
+    <header class="topbar">
+      <div class="breadcrumbs"><span id="workspace-name">Private workspace</span><span>/</span><strong id="current-view">Overview</strong></div>
+      <div class="topbar-actions">
+        <label class="global-search"><span>Search</span><input id="global-search" type="search" placeholder="Search records"><kbd>⌘ K</kbd></label>
+        <span id="module-plan" class="plan-label">__PLAN__ plan</span>
       </div>
-      <dl>
-        <div><dt>Category</dt><dd id="category">__CATEGORY__</dd></div>
-        <div><dt>Hosted plan</dt><dd id="plan">__PLAN__</dd></div>
-        <div><dt>Typed actions</dt><dd id="action-count">__ACTION_COUNT__</dd></div>
-        <div><dt>Module</dt><dd id="module-id">__MODULE_ID__</dd></div>
-      </dl>
     </header>
 
-    <section class="connection" aria-labelledby="connection-title">
-      <div><h2 id="connection-title">Connect this browser</h2><p>The backend API token stays server-side. Enter only the separate web access key configured for this UI.</p></div>
-      <div class="connection-controls">
-        <label for="web-key">Web access key</label>
-        <input id="web-key" type="password" autocomplete="current-password" placeholder="At least 24 characters">
-        <button id="connect" class="primary">Connect</button>
-        <button id="disconnect" class="quiet">Clear</button>
-      </div>
+    <div id="sample-banner" class="sample-banner" hidden><strong>Sample workspace</strong><span>This is the actual product UI using local seeded data. Connect your backend for durable shared records.</span></div>
+
+    <section id="view-overview" class="view overview-view">
+      <section class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">__MODULE_ID__ WORKSPACE</p>
+          <h1 id="hero-title">__HEADLINE__</h1>
+          <p id="hero-description">Product workspace</p>
+          <div class="hero-actions">
+            <button id="primary-action" class="primary" type="button"><span id="primary-action-label">Start workflow</span><span aria-hidden="true">↗</span></button>
+            <button id="view-all-records" class="secondary" type="button">Browse records</button>
+          </div>
+        </div>
+        <aside class="hero-signal" aria-label="Workspace signal">
+          <div class="signal-visual" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <p>Typed operations</p>
+          <strong>__ACTION_COUNT__</strong>
+          <small>Every workflow is schema-validated, scoped, and recorded by the shared backend.</small>
+        </aside>
+      </section>
+
+      <section id="metric-grid" class="metric-grid" aria-label="Workspace metrics"></section>
+
+      <section class="overview-grid">
+        <article class="panel recent-panel">
+          <div class="panel-heading"><div><p class="kicker">Current work</p><h2>Recent records</h2></div><button id="refresh-records" type="button" class="text-button">Refresh</button></div>
+          <div id="recent-records" class="recent-records"></div>
+        </article>
+        <article class="panel action-panel">
+          <div class="panel-heading"><div><p class="kicker">Move work forward</p><h2>Quick workflows</h2></div></div>
+          <div id="quick-actions" class="quick-actions"></div>
+        </article>
+        <article class="panel activity-panel">
+          <div class="panel-heading"><div><p class="kicker">Evidence trail</p><h2>Recent activity</h2></div></div>
+          <div id="activity-list" class="activity-list"></div>
+        </article>
+      </section>
     </section>
 
-    <section class="workspace-grid">
-      <article>
-        <div class="article-heading"><div><h2>Workspace</h2><p>Inspect or enable the product-scoped module.</p></div></div>
-        <div class="button-row"><button id="workspace">Read workspace</button><button id="enable">Enable product</button><button id="records">List records</button></div>
-      </article>
-      <article class="action-card">
-        <div class="article-heading"><div><h2>Typed action</h2><p id="action-description"></p></div></div>
-        <label for="action">Action</label>
-        <select id="action"></select>
-        <label for="action-input">JSON input</label>
-        <textarea id="action-input" spellcheck="false"></textarea>
-        <button id="run-action" class="primary">Run scoped action</button>
-      </article>
-      <article class="output-card">
-        <div class="article-heading"><div><h2>Result</h2><p>API responses and validation failures appear here.</p></div></div>
-        <pre id="output" data-kind="neutral">Connect to read the workspace.</pre>
-      </article>
+    <section id="view-records" class="view" hidden>
+      <div class="view-heading"><div><p class="eyebrow">DURABLE WORK</p><h1>Records</h1><p>Search, filter, and inspect product-scoped records without exposing database credentials.</p></div><button id="enable-product" class="primary" type="button">Enable product</button></div>
+      <div class="record-toolbar">
+        <label><span>Search records</span><input id="record-query" type="search" placeholder="Title, state, or data"></label>
+        <label><span>Record type</span><select id="record-type-filter"></select></label>
+        <strong id="record-count">0 records</strong>
+      </div>
+      <div id="record-grid" class="record-grid"></div>
+    </section>
+
+    <section id="view-workflows" class="view" hidden>
+      <div class="view-heading"><div><p class="eyebrow">TYPED OPERATIONS</p><h1>Workflows</h1><p>Every declared product action is available through a guided form, the CLI, and MCP with the same schema.</p></div></div>
+      <div id="workflow-groups" class="workflow-groups"></div>
+    </section>
+
+    <section id="view-ai" class="view" hidden>
+      <div class="view-heading"><div><p class="eyebrow">EVIDENCE-BOUND</p><h1>AI assistance</h1><p>AI creates reviewable proposals from typed evidence. It cannot bypass approvals or mutate consequential facts.</p></div></div>
+      <div id="ai-actions" class="ai-grid"></div>
+    </section>
+
+    <section id="view-settings" class="view" hidden>
+      <div class="view-heading"><div><p class="eyebrow">PRODUCT BOUNDARY</p><h1>Settings</h1><p id="settings-boundary"></p></div><button id="disconnect" class="secondary" type="button">Clear browser access</button></div>
+      <div class="settings-grid">
+        <article class="panel"><h2>Runtime</h2><dl class="detail-list"><div><dt>Module</dt><dd id="settings-module"></dd></div><div><dt>Minimum plan</dt><dd id="settings-plan"></dd></div><div><dt>Resource class</dt><dd id="settings-resource"></dd></div><div><dt>Product version</dt><dd id="settings-version"></dd></div></dl></article>
+        <article class="panel"><h2>AI capabilities</h2><ul id="capability-list" class="capability-list"></ul></article>
+        <article class="panel security-panel"><h2>Security model</h2><p>The browser key only unlocks this local product server. Your scoped bearer token remains server-side, and all durable tenant isolation stays in managed-oss-cloud.</p></article>
+      </div>
     </section>
   </main>
-  <script type="module" src="/app.js"></script>
+
+  <datalist id="record-identifiers"></datalist>
+
+  <dialog id="connect-dialog" class="modal connect-modal">
+    <div class="modal-heading"><div><p class="kicker">Private connection</p><h2>Connect this browser</h2><p>Enter the separate web access key configured for this product server. Never enter the backend bearer token here.</p></div><button id="connect-cancel" type="button" class="icon-button" aria-label="Close">×</button></div>
+    <label class="modal-field" for="web-key"><span>Web access key</span><input id="web-key" type="password" autocomplete="current-password" placeholder="At least 24 characters"></label>
+    <div class="modal-actions"><button id="connect" class="primary" type="button">Connect workspace</button></div>
+  </dialog>
+
+  <dialog id="action-dialog" class="modal action-modal">
+    <div class="modal-heading"><div><div class="action-meta"><span id="action-scope" class="scope"></span><span id="action-operation" class="scope"></span></div><h2 id="action-dialog-title">Run workflow</h2><p id="action-dialog-description"></p></div><button id="action-close" type="button" class="icon-button" aria-label="Close">×</button></div>
+    <form id="action-form" class="action-form"></form>
+    <details id="advanced-input" class="advanced-input"><summary>Advanced JSON input</summary><label for="action-json">Typed JSON</label><textarea id="action-json" spellcheck="false"></textarea></details>
+    <section id="action-result" class="action-result" hidden><h3>Workflow result</h3><pre id="action-result-json"></pre></section>
+    <div class="modal-actions"><button id="action-execute" class="primary" type="button">Run workflow</button></div>
+  </dialog>
+
+  <dialog id="record-dialog" class="modal record-modal">
+    <div class="modal-heading"><div><p class="kicker">Durable record</p><h2 id="record-detail-title">Record</h2><p id="record-detail-meta"></p></div><button id="record-close" type="button" class="icon-button" aria-label="Close">×</button></div>
+    <pre id="record-detail-json" class="record-json"></pre>
+  </dialog>
+
+  <script type="module" src="/app.js?v=__VERSION__"></script>
 </body>
 </html>
 `;
 
 const stylesSource = String.raw`* { box-sizing: border-box; }
-:root { font-family: Geist, "Helvetica Neue", Arial, sans-serif; color: #f5f7fa; background: #0b0e13; }
-body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 78% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 34rem), #0b0e13; }
+:root {
+  --accent: __ACCENT__;
+  --accent-dark: __ACCENT_DARK__;
+  --canvas: #090b0f;
+  --surface: #101319;
+  --surface-raised: #151920;
+  --surface-soft: #1a1f27;
+  --line: #282e38;
+  --line-strong: #39414d;
+  --text: #f4f5f7;
+  --muted: #969faa;
+  --muted-strong: #bbc2cb;
+  --danger: #ff7d75;
+  color: var(--text);
+  background: var(--canvas);
+  font-family: Geist, "Helvetica Neue", Arial, sans-serif;
+  font-synthesis: none;
+}
+html { min-width: 320px; background: var(--canvas); scroll-behavior: smooth; }
+body { margin: 0; min-height: 100vh; overflow-x: hidden; background: radial-gradient(circle at 88% -8%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 30rem), var(--canvas); }
+body::before { position: fixed; inset: 0; z-index: -1; pointer-events: none; content: ""; opacity: 0.32; background-image: linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(to bottom, black, transparent 72%); }
 button, input, select, textarea { font: inherit; }
-button { border: 1px solid #3a424f; border-radius: 0.7rem; padding: 0.72rem 1rem; color: #f5f7fa; background: #171c24; cursor: pointer; transition: transform 160ms ease, border-color 160ms ease, background 160ms ease; }
-button:hover { transform: translateY(-1px); border-color: var(--accent); }
-button.primary { border-color: var(--accent); color: #06120f; background: var(--accent); font-weight: 750; }
-button.quiet { background: transparent; }
-input, select, textarea { width: 100%; border: 1px solid #343c48; border-radius: 0.7rem; color: #f5f7fa; background: #0d1117; padding: 0.78rem 0.88rem; }
-textarea { min-height: 15rem; resize: vertical; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.83rem; line-height: 1.55; }
-label { display: block; margin: 1rem 0 0.45rem; color: #aeb7c5; font-size: 0.82rem; font-weight: 650; }
-main { width: min(1480px, calc(100% - 2rem)); margin: 0 auto; padding: 1rem 0 5rem; }
-nav { position: sticky; top: 1rem; z-index: 3; display: flex; justify-content: space-between; align-items: center; width: min(920px, 100%); margin: 0 auto; padding: 0.8rem 1rem; border: 1px solid #2c333e; border-radius: 1rem; background: rgba(14, 18, 24, 0.82); backdrop-filter: blur(18px); }
-.brand { display: flex; align-items: center; gap: 0.7rem; color: inherit; text-decoration: none; font-weight: 780; letter-spacing: -0.02em; }
-.mark { width: 1.05rem; height: 1.05rem; border-radius: 0.3rem; background: linear-gradient(135deg, var(--accent), var(--accent-dark)); box-shadow: 0 0 1.6rem color-mix(in srgb, var(--accent) 55%, transparent); }
-.state { display: flex; align-items: center; gap: 0.45rem; color: #9aa5b3; font-size: 0.82rem; }
-.state-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #5e6672; }
-.state:has([data-connected="true"]) .state-dot { background: var(--accent); box-shadow: 0 0 0.75rem var(--accent); }
-header { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(20rem, 0.8fr); gap: 5rem; align-items: end; padding: 8rem 2rem 6rem; }
-.eyebrow { margin: 0 0 1.2rem; color: var(--accent); font-size: 0.76rem; font-weight: 760; letter-spacing: 0.18em; }
-h1 { max-width: 62rem; margin: 0; font-size: clamp(2.7rem, 6.5vw, 6.3rem); line-height: 0.97; letter-spacing: -0.06em; }
-h2 { margin: 0; font-size: 1.22rem; letter-spacing: -0.025em; }
-p { color: #929ca9; line-height: 1.55; }
-dl { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: 0; overflow: hidden; border: 1px solid #303743; border-radius: 1rem; background: #303743; }
-dl div { padding: 1rem; background: #11161d; }
-dt { color: #7f8997; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; }
-dd { margin: 0.35rem 0 0; font-weight: 680; }
-.connection { display: grid; grid-template-columns: 1fr minmax(26rem, 0.8fr); gap: 3rem; align-items: end; padding: 2rem; border: 1px solid color-mix(in srgb, var(--accent) 35%, #303743); border-radius: 1.2rem; background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 9%, #12171e), #10141a); }
-.connection p, .article-heading p { margin: 0.55rem 0 0; }
-.connection-controls { display: grid; grid-template-columns: 1fr auto auto; gap: 0.55rem; align-items: end; }
-.connection-controls label { grid-column: 1 / -1; margin-top: 0; }
-.workspace-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
-article { min-width: 0; padding: 1.5rem; border: 1px solid #2b323d; border-radius: 1.2rem; background: rgba(16, 20, 27, 0.88); }
-.action-card { grid-row: span 2; }
-.output-card { min-height: 24rem; }
-.button-row { display: flex; flex-wrap: wrap; gap: 0.65rem; margin-top: 1.5rem; }
-pre { min-height: 17rem; margin: 1.25rem 0 0; overflow: auto; border-radius: 0.8rem; padding: 1rem; color: #d7dce5; background: #080b0f; font-size: 0.79rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-pre[data-kind="success"] { border-left: 3px solid var(--accent); }
-pre[data-kind="error"] { border-left: 3px solid #ff625f; color: #ffb2b0; }
-@media (max-width: 900px) { header, .connection, .workspace-grid { grid-template-columns: 1fr; } header { gap: 2.5rem; padding: 6rem 0 4rem; } .connection-controls { grid-template-columns: 1fr 1fr; } .connection-controls input { grid-column: 1 / -1; } .action-card { grid-row: auto; } }
-@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+button { color: inherit; }
+button, a, input, select, textarea, summary { outline-offset: 3px; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); }
+button { border: 0; cursor: pointer; }
+input, select, textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 0.72rem; padding: 0.78rem 0.88rem; color: var(--text); background: #0d1015; transition: border-color 160ms ease, box-shadow 160ms ease; }
+input:hover, select:hover, textarea:hover { border-color: #515b69; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
+textarea { resize: vertical; line-height: 1.55; }
+h1, h2, h3, p { margin-top: 0; }
+h1, h2, h3, strong { letter-spacing: -0.025em; }
+h1 { max-width: 72rem; margin-bottom: 1.15rem; font-size: clamp(2.5rem, 5vw, 5.4rem); line-height: 0.98; letter-spacing: -0.062em; }
+h2 { margin-bottom: 0.55rem; font-size: clamp(1.35rem, 2vw, 1.9rem); }
+h3 { margin-bottom: 0.5rem; }
+p { color: var(--muted); line-height: 1.58; }
+[hidden] { display: none !important; }
+
+.side-nav { position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; flex-direction: column; width: 264px; padding: 1.35rem 1rem 1rem; border-right: 1px solid var(--line); background: rgba(12, 15, 20, 0.94); backdrop-filter: blur(24px); }
+.brand { display: flex; align-items: center; gap: 0.8rem; min-width: 0; padding: 0.4rem 0.55rem 1.6rem; color: var(--text); text-decoration: none; }
+.brand > span:last-child { display: grid; min-width: 0; gap: 0.16rem; }
+.brand strong { overflow: hidden; font-size: 1rem; text-overflow: ellipsis; white-space: nowrap; }
+.brand small { overflow: hidden; color: var(--muted); font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
+.mark { display: inline-flex; align-items: end; justify-content: center; gap: 2px; width: 2.25rem; height: 2.25rem; padding: 0.56rem; flex: 0 0 auto; border-radius: 0.72rem; color: #06110e; background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent-dark) 75%, #000)); box-shadow: 0 0.8rem 2.4rem color-mix(in srgb, var(--accent) 18%, transparent); }
+.mark span { display: block; width: 3px; border-radius: 3px; background: currentColor; animation: signal 1.8s ease-in-out infinite; }
+.mark span:nth-child(1) { height: 45%; animation-delay: -0.4s; }
+.mark span:nth-child(2) { height: 100%; animation-delay: -0.8s; }
+.mark span:nth-child(3) { height: 65%; animation-delay: -1.2s; }
+.side-nav nav { display: grid; gap: 0.26rem; }
+.side-nav nav button { display: flex; align-items: center; gap: 0.72rem; width: 100%; border-radius: 0.7rem; padding: 0.72rem 0.76rem; color: var(--muted-strong); background: transparent; text-align: left; transition: color 160ms ease, background 160ms ease, transform 160ms ease; }
+.side-nav nav button:hover { color: var(--text); background: var(--surface-soft); transform: translateX(2px); }
+.side-nav nav button[data-active="true"] { color: #07110e; background: var(--accent); font-weight: 760; }
+.nav-glyph { display: grid; place-items: center; width: 1.6rem; height: 1.6rem; border: 1px solid currentColor; border-radius: 0.45rem; font-size: 0.62rem; font-weight: 800; opacity: 0.78; }
+.nav-footer { display: grid; gap: 0.72rem; margin-top: auto; padding: 1rem 0.55rem 0.25rem; border-top: 1px solid var(--line); }
+.nav-footer p { margin: 0; font-size: 0.72rem; }
+.connection-state { display: flex; align-items: center; gap: 0.48rem; color: var(--muted-strong); font-size: 0.78rem; }
+.state-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #59616c; }
+.connection-state:has([data-connected="true"]) .state-dot { background: var(--accent); box-shadow: 0 0 0.8rem var(--accent); }
+.connect-button { width: 100%; border: 1px solid var(--line-strong); border-radius: 0.66rem; padding: 0.7rem; color: var(--text); background: var(--surface-raised); font-size: 0.78rem; font-weight: 680; }
+.connect-button:hover { border-color: var(--accent); }
+
+.workspace-shell { width: calc(100% - 264px); min-height: 100vh; margin-left: 264px; padding: 0 2.2rem 6rem; }
+.topbar { position: sticky; top: 0; z-index: 15; display: flex; align-items: center; justify-content: space-between; min-height: 4.75rem; margin: 0 -2.2rem; padding: 0 2.2rem; border-bottom: 1px solid rgba(40,46,56,0.78); background: rgba(9, 11, 15, 0.78); backdrop-filter: blur(22px); }
+.breadcrumbs { display: flex; gap: 0.55rem; align-items: center; color: var(--muted); font-size: 0.78rem; }
+.breadcrumbs strong { color: var(--text); }
+.topbar-actions { display: flex; gap: 0.7rem; align-items: center; }
+.global-search { position: relative; display: flex; align-items: center; min-width: min(25rem, 32vw); }
+.global-search > span { position: absolute; overflow: hidden; width: 1px; height: 1px; clip: rect(0 0 0 0); }
+.global-search input { height: 2.55rem; padding-right: 3.6rem; background: rgba(17,20,26,0.82); }
+kbd { position: absolute; right: 0.65rem; border: 1px solid var(--line-strong); border-radius: 0.35rem; padding: 0.18rem 0.35rem; color: var(--muted); background: var(--surface-soft); font-size: 0.62rem; }
+.plan-label { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 999px; padding: 0.5rem 0.72rem; color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); font-size: 0.72rem; font-weight: 720; }
+.sample-banner { display: flex; gap: 0.75rem; align-items: center; margin: 1rem 0 0; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line)); border-radius: 0.7rem; padding: 0.72rem 0.88rem; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); font-size: 0.78rem; }
+.sample-banner strong { color: var(--accent); }
+.sample-banner span { color: var(--muted-strong); }
+
+.view { width: min(1540px, 100%); margin: 0 auto; padding-top: 3rem; animation: view-in 400ms cubic-bezier(.2,.8,.2,1) both; }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(19rem, 0.55fr); gap: clamp(2rem, 7vw, 8rem); align-items: end; min-height: 31rem; padding: clamp(4rem, 9vw, 8rem) 0 4.5rem; }
+.hero-copy { min-width: 0; }
+.hero-copy > p:not(.eyebrow) { max-width: 52rem; margin-bottom: 2rem; font-size: 1rem; }
+.eyebrow, .kicker { margin-bottom: 0.85rem; color: var(--accent); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.17em; text-transform: uppercase; }
+.hero-actions, .modal-actions { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+.primary, .secondary { display: inline-flex; align-items: center; justify-content: center; gap: 1.2rem; min-height: 2.8rem; border-radius: 0.7rem; padding: 0.76rem 1.05rem; font-weight: 760; transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease; }
+.primary { color: #07110e; background: var(--accent); box-shadow: 0 0.85rem 2.6rem color-mix(in srgb, var(--accent) 14%, transparent); }
+.primary:hover { transform: translateY(-2px); box-shadow: 0 1rem 3rem color-mix(in srgb, var(--accent) 24%, transparent); }
+.secondary { border: 1px solid var(--line-strong); color: var(--text); background: var(--surface-raised); }
+.secondary:hover { border-color: var(--accent); transform: translateY(-2px); }
+.hero-signal { position: relative; overflow: hidden; min-height: 21rem; border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line)); border-radius: 1.3rem; padding: 1.5rem; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8%, var(--surface-raised)), var(--surface)); }
+.hero-signal::after { position: absolute; inset: auto -22% -38% 28%; height: 14rem; border-radius: 50%; content: ""; background: color-mix(in srgb, var(--accent) 20%, transparent); filter: blur(48px); }
+.hero-signal p { margin: 1.8rem 0 0.25rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; }
+.hero-signal > strong { position: relative; z-index: 1; display: block; font-size: clamp(4rem, 7vw, 7.8rem); line-height: 0.9; letter-spacing: -0.08em; }
+.hero-signal small { position: absolute; right: 1.5rem; bottom: 1.4rem; left: 1.5rem; z-index: 1; color: var(--muted-strong); line-height: 1.5; }
+.signal-visual { display: flex; align-items: end; gap: 0.28rem; height: 4rem; }
+.signal-visual span { width: 0.42rem; border-radius: 999px; background: var(--accent); animation: signal 2.1s ease-in-out infinite; }
+.signal-visual span:nth-child(1), .signal-visual span:nth-child(7) { height: 20%; }
+.signal-visual span:nth-child(2), .signal-visual span:nth-child(6) { height: 42%; animation-delay: -0.3s; }
+.signal-visual span:nth-child(3), .signal-visual span:nth-child(5) { height: 70%; animation-delay: -0.6s; }
+.signal-visual span:nth-child(4) { height: 100%; animation-delay: -0.9s; }
+
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 1rem; overflow: hidden; background: var(--line); gap: 1px; }
+.metric-card { display: grid; gap: 1.25rem; min-height: 9.2rem; padding: 1.2rem; background: var(--surface); }
+.metric-value { font-size: 2.45rem; font-weight: 680; letter-spacing: -0.06em; }
+.metric-label { align-self: end; color: var(--muted); font-size: 0.75rem; }
+.overview-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-flow: dense; gap: 1rem; margin-top: 1rem; }
+.panel { min-width: 0; border: 1px solid var(--line); border-radius: 1rem; padding: 1.35rem; background: rgba(16,19,25,0.9); }
+.recent-panel { grid-column: span 8; min-height: 25rem; }
+.action-panel { grid-column: span 4; grid-row: span 2; }
+.activity-panel { grid-column: span 8; }
+.panel-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1.2rem; }
+.panel-heading h2 { margin: 0; }
+.panel-heading .kicker { margin-bottom: 0.35rem; }
+.text-button { padding: 0.4rem; color: var(--accent); background: transparent; font-size: 0.74rem; font-weight: 720; }
+.recent-records, .quick-actions, .activity-list { display: grid; gap: 0.55rem; }
+.record-card, .quick-action, .action-row, .ai-card { position: relative; display: grid; width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 0.78rem; color: var(--text); background: var(--surface-raised); text-align: left; transition: transform 180ms ease, border-color 180ms ease, background 180ms ease; }
+.record-card:hover, .quick-action:hover, .action-row:hover, .ai-card:hover { z-index: 2; border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised)); transform: translateY(-2px) scale(1.006); }
+.record-card.compact { grid-template-columns: 1fr auto; align-items: center; gap: 0.55rem 1rem; padding: 0.85rem 0.95rem; }
+.record-card.compact .record-card-top { grid-column: 1 / -1; }
+.record-card.compact .record-date { text-align: right; }
+.record-card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.record-type, .record-state, .scope { color: var(--muted); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.record-state { color: var(--accent); }
+.record-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-date { color: var(--muted); font-size: 0.68rem; }
+.quick-action { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; padding: 0.9rem; }
+.quick-action::after { content: "↗"; color: var(--accent); }
+.action-copy { display: grid; min-width: 0; gap: 0.28rem; }
+.action-copy small { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 0.7rem; line-height: 1.4; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.activity-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 0.7rem; align-items: center; border-top: 1px solid var(--line); padding: 0.76rem 0; font-size: 0.76rem; }
+.activity-row:first-child { border-top: 0; }
+.activity-dot { width: 0.48rem; height: 0.48rem; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0.6rem color-mix(in srgb, var(--accent) 70%, transparent); }
+.activity-status, .activity-row time { color: var(--muted); }
+
+.view-heading { display: flex; align-items: end; justify-content: space-between; gap: 2rem; min-height: 18rem; padding: 4rem 0 3rem; }
+.view-heading h1 { margin-bottom: 0.7rem; }
+.view-heading p:not(.eyebrow) { max-width: 56rem; margin-bottom: 0; }
+.record-toolbar { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(12rem, 0.45fr) auto; gap: 0.8rem; align-items: end; border: 1px solid var(--line); border-radius: 1rem; padding: 1rem; background: var(--surface); }
+.record-toolbar label { display: grid; gap: 0.42rem; color: var(--muted); font-size: 0.7rem; }
+.record-toolbar strong { padding: 0.8rem 0; color: var(--muted-strong); font-size: 0.74rem; white-space: nowrap; }
+.record-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: dense; gap: 0.8rem; margin-top: 0.8rem; }
+.record-grid .record-card { min-height: 11rem; padding: 1rem; }
+.record-grid .record-title { align-self: end; font-size: 1.05rem; }
+.empty-state { display: grid; place-items: center; min-height: 9rem; margin: 0; border: 1px dashed var(--line-strong); border-radius: 0.72rem; padding: 1rem; text-align: center; }
+.empty-state.wide { grid-column: 1 / -1; }
+
+.workflow-groups { display: grid; border-top: 1px solid var(--line); }
+.workflow-group { border-bottom: 1px solid var(--line); }
+.workflow-trigger { display: grid; grid-template-columns: auto 1fr auto; gap: 1rem; align-items: center; width: 100%; padding: 1.35rem 0.4rem; color: var(--text); background: transparent; text-align: left; }
+.workflow-trigger:hover strong { color: var(--accent); }
+.workflow-index, .workflow-count { color: var(--muted); font-size: 0.7rem; }
+.workflow-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; padding: 0 0.4rem 1.4rem 3rem; }
+.action-row { display: flex; align-items: start; justify-content: space-between; gap: 0.8rem; min-height: 6.5rem; padding: 0.95rem; }
+.ai-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+.ai-card { min-height: 13rem; padding: 1.15rem; }
+.ai-card .scope { position: absolute; right: 1rem; bottom: 1rem; color: var(--accent); }
+.ai-card::before { width: 2rem; height: 2px; margin-bottom: 2.5rem; content: ""; background: var(--accent); box-shadow: 0 0 1rem var(--accent); }
+
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: dense; gap: 1rem; }
+.settings-grid .panel { min-height: 19rem; }
+.security-panel { grid-column: 1 / -1; min-height: auto !important; }
+.detail-list { display: grid; gap: 0; margin: 1rem 0 0; }
+.detail-list div { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--line); padding: 0.85rem 0; }
+.detail-list dt { color: var(--muted); }
+.detail-list dd { margin: 0; font-weight: 680; }
+.capability-list { display: grid; gap: 0.8rem; margin: 1.2rem 0 0; padding: 0; list-style: none; }
+.capability-list li { border-left: 2px solid var(--accent); padding: 0.45rem 0.8rem; color: var(--muted-strong); }
+
+.modal { width: min(48rem, calc(100% - 2rem)); max-height: calc(100vh - 2rem); overflow: auto; border: 1px solid var(--line-strong); border-radius: 1.15rem; padding: 1.35rem; color: var(--text); background: #101319; box-shadow: 0 2rem 8rem rgba(0,0,0,0.58); }
+.action-modal { width: min(60rem, calc(100% - 2rem)); }
+.modal::backdrop { background: rgba(2,4,7,0.76); backdrop-filter: blur(8px); }
+.modal-heading { display: flex; align-items: start; justify-content: space-between; gap: 2rem; margin-bottom: 1.2rem; }
+.modal-heading h2 { margin-bottom: 0.5rem; }
+.modal-heading p:not(.kicker) { margin-bottom: 0; }
+.icon-button { display: grid; place-items: center; flex: 0 0 auto; width: 2.3rem; height: 2.3rem; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--muted-strong); background: var(--surface-raised); font-size: 1.2rem; }
+.modal-field, .field-group { display: grid; gap: 0.45rem; margin-top: 1rem; }
+.modal-field > span, .field-label { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; color: var(--muted-strong); font-size: 0.74rem; font-weight: 680; }
+.required { color: var(--accent); font-size: 0.6rem; letter-spacing: 0.07em; text-transform: uppercase; }
+.modal-actions { justify-content: flex-end; margin-top: 1.2rem; }
+.action-meta { display: flex; gap: 0.45rem; margin-bottom: 0.6rem; }
+.action-meta .scope { border: 1px solid var(--line-strong); border-radius: 999px; padding: 0.34rem 0.5rem; }
+.action-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 0.8rem; }
+.field-group:has(textarea), .field-group:has(.toggle) { grid-column: 1 / -1; }
+.field-help { margin: 0; font-size: 0.65rem; }
+.toggle { display: flex; align-items: center; gap: 0.65rem; cursor: pointer; }
+.toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.toggle-track { position: relative; width: 2.5rem; height: 1.38rem; border: 1px solid var(--line-strong); border-radius: 999px; background: #0d1015; }
+.toggle-track::after { position: absolute; top: 0.2rem; left: 0.2rem; width: 0.86rem; height: 0.86rem; border-radius: 50%; content: ""; background: var(--muted); transition: transform 160ms ease, background 160ms ease; }
+.toggle input:checked + .toggle-track::after { background: var(--accent); transform: translateX(1.08rem); }
+.toggle-copy { color: var(--muted-strong); font-size: 0.74rem; }
+.advanced-input { margin-top: 1rem; border: 1px solid var(--line); border-radius: 0.78rem; padding: 0.85rem; background: #0d1015; }
+.advanced-input summary { color: var(--muted-strong); cursor: pointer; font-size: 0.74rem; font-weight: 680; }
+.advanced-input label { display: block; margin: 1rem 0 0.45rem; color: var(--muted); font-size: 0.68rem; }
+.advanced-input textarea { min-height: 14rem; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.72rem; }
+.action-result { margin-top: 1rem; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 0.78rem; padding: 1rem; background: color-mix(in srgb, var(--accent) 5%, #0d1015); }
+pre { overflow: auto; margin: 0; border-radius: 0.65rem; padding: 0.9rem; color: #d9dee5; background: #080a0d; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.7rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.record-json { max-height: 65vh; }
+
+.toast-root { position: fixed; top: 1rem; right: 1rem; z-index: 100; display: grid; gap: 0.55rem; width: min(24rem, calc(100% - 2rem)); }
+.toast { border: 1px solid var(--line-strong); border-radius: 0.72rem; padding: 0.8rem 0.9rem; color: var(--muted-strong); background: #151920; box-shadow: 0 1rem 3rem rgba(0,0,0,0.4); opacity: 0; transform: translateY(-0.6rem); transition: opacity 200ms ease, transform 200ms ease; }
+.toast[data-visible="true"] { opacity: 1; transform: translateY(0); }
+.toast[data-kind="success"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.toast[data-kind="error"] { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); color: #ffd0cc; }
+.busy-overlay { position: fixed; inset: 0; z-index: 90; display: none; place-items: center; align-content: center; gap: 0.8rem; color: var(--muted-strong); background: rgba(7,9,12,0.58); backdrop-filter: blur(4px); font-size: 0.8rem; }
+body[data-busy="true"] .busy-overlay { display: grid; }
+.busy-spinner { width: 2rem; height: 2rem; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
+
+@keyframes signal { 0%, 100% { transform: scaleY(0.72); opacity: 0.7; } 50% { transform: scaleY(1.04); opacity: 1; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes view-in { from { opacity: 0; transform: translateY(0.8rem); } to { opacity: 1; transform: translateY(0); } }
+
+@media (max-width: 1080px) {
+  .side-nav { width: 220px; }
+  .workspace-shell { width: calc(100% - 220px); margin-left: 220px; }
+  .hero-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+  .hero-signal { min-height: 15rem; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recent-panel, .action-panel, .activity-panel { grid-column: 1 / -1; grid-row: auto; }
+  .record-grid, .ai-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .side-nav { position: fixed; inset: auto 0 0; width: 100%; height: auto; padding: 0.45rem; border: 0; border-top: 1px solid var(--line); }
+  .brand, .nav-footer { display: none; }
+  .side-nav nav { grid-template-columns: repeat(5, 1fr); }
+  .side-nav nav button { justify-content: center; padding: 0.6rem 0.2rem; font-size: 0; }
+  .side-nav nav button .nav-glyph { font-size: 0.62rem; }
+  .workspace-shell { width: 100%; margin-left: 0; padding: 0 1rem 6rem; }
+  .topbar { margin: 0 -1rem; padding: 0 1rem; }
+  .breadcrumbs, .plan-label { display: none; }
+  .topbar-actions, .global-search { width: 100%; min-width: 0; }
+  .hero-grid { min-height: auto; padding: 5rem 0 3rem; }
+  h1 { font-size: clamp(2.45rem, 12vw, 4.2rem); }
+  .metric-grid, .record-grid, .ai-grid, .workflow-body, .settings-grid, .action-form { grid-template-columns: 1fr; }
+  .overview-grid { display: block; }
+  .overview-grid > * { margin-top: 0.8rem; }
+  .record-toolbar { grid-template-columns: 1fr; }
+  .view-heading { align-items: start; flex-direction: column; min-height: auto; padding: 4rem 0 2rem; }
+  .workflow-body { padding-left: 0.4rem; }
+  .security-panel, .field-group:has(textarea), .field-group:has(.toggle) { grid-column: auto; }
+  .sample-banner { align-items: start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
 `;
 
 const fakeApiSource = String.raw`import { createServer } from "node:http";
@@ -1205,6 +2100,62 @@ test("web UI keeps the API token server-side and gates proxy calls", async (cont
 });
 `;
 
+const demoTestSource = String.raw`import assert from "node:assert/strict";
+import test from "node:test";
+import { DemoProductClient } from "../src/demo-client.mjs";
+import { manifest } from "../src/manifest.mjs";
+
+test("sample workspace exercises every declared product action", async () => {
+  const client = new DemoProductClient();
+  const workspace = await client.workspace();
+  assert.equal(workspace.demo, true);
+  assert.deepEqual(workspace.workspace.enabledModuleIds, [manifest.module.id]);
+  const initial = await client.listRecords({ limit: 200 });
+  assert.ok(initial.records.length > 0);
+  for (const action of manifest.actions) {
+    const result = await client.runAction(action.id, action.exampleInput);
+    assert.equal(result.action.id, action.id);
+    assert.equal(result.demo, true);
+  }
+  const final = await client.listRecords({ limit: 200 });
+  assert.ok(final.records.length >= initial.records.length);
+});
+
+test("every declared action output type is available through record filtering", async () => {
+  const client = new DemoProductClient();
+  const outputTypes = new Set(manifest.actions.map((action) => action.recordType).filter(Boolean));
+  for (const recordType of outputTypes) {
+    assert.ok(manifest.module.recordTypes.includes(recordType));
+    const result = await client.listRecords({ recordType, limit: 200 });
+    assert.ok(Array.isArray(result.records));
+  }
+});
+`;
+
+const uiTestSource = String.raw`import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { manifest } from "../src/manifest.mjs";
+
+test("product UI exposes overview, records, workflows, AI, settings, and guided forms", async () => {
+  const [html, app, css] = await Promise.all([
+    readFile(new URL("../web/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../web/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../web/styles.css", import.meta.url), "utf8"),
+  ]);
+  for (const view of ["overview", "records", "workflows", "ai", "settings"]) {
+    assert.match(html, new RegExp("data-view=\\\"" + view + "\\\""));
+    assert.match(html, new RegExp("id=\\\"view-" + view + "\\\""));
+  }
+  assert.match(html, /id="action-form"/);
+  assert.match(app, /function createField/);
+  assert.match(app, /manifest\.experience\.workflowGroups/);
+  assert.doesNotMatch(html, /<body[^>]+style=/);
+  assert.match(css, new RegExp("--accent:\\s*" + manifest.product.accent.replace("#", "\\#"), "i"));
+  assert.match(css, /grid-auto-flow:\s*dense/);
+});
+`;
+
 const verifyManifestSource = String.raw`import assert from "node:assert/strict";
 import { manifest } from "../src/manifest.mjs";
 import { validateInput } from "../src/validation.mjs";
@@ -1218,8 +2169,29 @@ assert.ok(manifest.actions.every((action) => action.moduleId === manifest.module
 assert.equal(new Set(manifest.actions.map((action) => action.id)).size, manifest.actions.length);
 assert.equal(new Set(manifest.actions.map((action) => action.productMcpToolName)).size, manifest.actions.length);
 assert.ok(manifest.actions.every((action) => action.inputSchema?.type === "object" && action.inputSchema.additionalProperties === false));
+assert.ok(manifest.actions.every((action) => !action.recordType || manifest.module.recordTypes.includes(action.recordType)), "Every action output record type must be listable by web, CLI, and MCP clients.");
+assert.equal(manifest.experience.primaryActionId, manifest.actions.find((action) => action.id === manifest.experience.primaryActionId)?.id);
+assert.ok(manifest.experience.workflowGroups.flatMap((group) => group.actionIds).length === manifest.actions.length, "Every action must appear in exactly one guided workflow group.");
+if (manifest.actions.find((action) => action.id === manifest.experience.primaryActionId)?.operation === "create") {
+  assert.ok(manifest.experience.workflowGroups.find((group) => group.name === "Create and capture")?.actionIds.includes(manifest.experience.primaryActionId), "A primary create action must lead the Create and capture workflow group.");
+}
 for (const action of manifest.actions) validateInput(action.inputSchema, action.exampleInput, "actions." + action.id + ".exampleInput");
 process.stdout.write(manifest.product.name + ": " + manifest.actions.length + " pinned typed actions verified.\n");
+`;
+
+const verifyScreenshotSource = String.raw`import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { manifest } from "../src/manifest.mjs";
+
+const path = new URL("../docs/product-workspace.png", import.meta.url);
+const image = await readFile(path);
+assert.ok(image.length > 50_000, "The product screenshot must be a real rendered PNG larger than 50 KB.");
+assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], "The product screenshot must have a valid PNG signature.");
+const width = image.readUInt32BE(16);
+const height = image.readUInt32BE(20);
+assert.equal(width, 1440, "The product screenshot width must be exactly 1440 pixels.");
+assert.equal(height, 1000, "The product screenshot height must be exactly 1000 pixels.");
+process.stdout.write(manifest.product.name + ": verified " + width + "x" + height + " product screenshot.\n");
 `;
 
 const mitLicense = `MIT License
@@ -1253,6 +2225,14 @@ function readme(product, module, manifest) {
 ${product.tagline}
 
 ${product.name} is a focused, public MIT distribution for the \`${module.id}\` module in [managed-oss-cloud](https://github.com/rohanarun/managed-oss-cloud). It includes a product web UI, a product-scoped HTTP client, the \`${product.command}\` CLI, and a stdio MCP server exposing only this product's ${manifest.actions.length} typed actions.
+
+![${product.name} sample workspace](./docs/product-workspace.png)
+
+## Product v1 boundary
+
+This release is declared-action complete: every typed action in this repository's product manifest is exposed through guided schema-driven browser forms with durable record browsing, workflow groups, AI proposal surfaces, connection settings, CLI parity, and MCP parity. The screenshot above is captured from the actual application in its visibly labeled local sample-workspace mode.
+
+That boundary does not claim feature parity with any unrelated mature third-party product. Provider adapters, external delivery, customer-selected storage, legal review, and other category-specific stop lines remain explicit in the [suite acceptance matrix](https://github.com/rohanarun/managed-oss-cloud/blob/main/docs/product-v1-acceptance.md).
 
 ## Current boundary
 
@@ -1299,15 +2279,23 @@ npm start
 
 Open \`http://127.0.0.1:4173\`. Put the service behind TLS and an authenticated reverse proxy before exposing it to a network.
 
+To explore the complete product UI without a backend account, start the clearly labeled local sample workspace:
+
+\`\`\`bash
+npm run demo
+\`\`\`
+
+Open \`http://127.0.0.1:4173\` and connect with \`sample-workspace-key-2026\`. Sample mode is only a UI fixture; backend and persistence acceptance is tested separately against managed-oss-cloud.
+
 Docker runs the same server:
 
 \`\`\`bash
-docker build -t ${product.slug}:0.1.0 .
+docker build -t ${product.slug}:${generatedVersion} .
 docker run --rm -p 4173:4173 \\
   -e ${prefix}_TOKEN \\
   -e ${prefix}_URL \\
   -e ${prefix}_WEB_KEY \\
-  ${product.slug}:0.1.0
+  ${product.slug}:${generatedVersion}
 \`\`\`
 
 ## Connect the MCP server
@@ -1345,7 +2333,7 @@ Then point \`${prefix}_URL\` at the self-hosted control-plane origin. All produc
 |---|---|---|---|
 ${actionRows}
 
-The complete machine-readable module definition, JSON input schemas, MCP tool names, risk metadata, examples, and release provenance are pinned in [product-manifest.json](./product-manifest.json).
+The complete machine-readable module definition, JSON input schemas, MCP tool names, examples, and release provenance are pinned in [product-manifest.json](./product-manifest.json).
 
 ## Clean-room statement
 
@@ -1366,10 +2354,11 @@ See [SECURITY.md](./SECURITY.md) for vulnerability reporting and the trust bound
 \`\`\`bash
 npm test
 npm run verify
+npm run verify:screenshot
 npm pack --dry-run
 \`\`\`
 
-The tests run against a fake API and prove bearer authentication, fixed module routing, input validation, CLI execution, stdio MCP discovery/calls, web-key protection, and server-side token handling.
+The repository tests prove bearer authentication, fixed module routing, input validation, every declared action's HTTP/CLI/MCP registration, sample-workspace behavior, web-key protection, server-side token handling, and the captured PNG's format and dimensions. Durable backend behavior and tenant isolation remain covered by managed-oss-cloud's PostgreSQL and application acceptance suites.
 
 ## License
 
@@ -1411,11 +2400,13 @@ function packageJson(product) {
       [product.command]: "src/cli.mjs",
       [product.command + "-mcp"]: "src/mcp.mjs",
     },
-    files: ["src", "web", "product-manifest.json", "LICENSE", "README.md", "SECURITY.md", "Dockerfile"],
+    files: ["src", "web", "docs", "product-manifest.json", "LICENSE", "README.md", "SECURITY.md", "Dockerfile"],
     scripts: {
       start: "node src/web-server.mjs",
+      demo: "node src/demo-server.mjs",
       test: "node --test --test-concurrency=1",
       verify: "node scripts/verify-manifest.mjs && node --test --test-concurrency=1",
+      "verify:screenshot": "node scripts/verify-screenshot.mjs",
     },
   };
 }
@@ -1457,6 +2448,7 @@ jobs:
           node-version: 22
       - run: npm test
       - run: npm run verify
+      - run: npm run verify:screenshot
       - run: npm pack --dry-run
       - run: docker build --tag product-ci:test .
 `;
@@ -1477,6 +2469,7 @@ async function writeProductRepository(root, product, force) {
   }
   await Promise.all([
     mkdir(join(target, ".github", "workflows"), { recursive: true }),
+    mkdir(join(target, "docs"), { recursive: true }),
     mkdir(join(target, "scripts"), { recursive: true }),
     mkdir(join(target, "src"), { recursive: true }),
     mkdir(join(target, "test", "helpers"), { recursive: true }),
@@ -1485,6 +2478,7 @@ async function writeProductRepository(root, product, force) {
   const manifest = productManifest(product, module, actions);
   const substitutions = {
     PRODUCT_NAME: product.name,
+    HEADLINE: manifest.experience.headline,
     TAGLINE: product.tagline,
     ACCENT: product.accent,
     ACCENT_DARK: product.accentDark,
@@ -1492,6 +2486,7 @@ async function writeProductRepository(root, product, force) {
     PLAN: module.minPlan,
     ACTION_COUNT: String(actions.length),
     MODULE_ID: module.id,
+    VERSION: generatedVersion,
   };
   const files = new Map([
     [".dockerignore", ".git\n.github\nnode_modules\nnpm-debug.log\ntest\n"],
@@ -1504,28 +2499,33 @@ async function writeProductRepository(root, product, force) {
     ["package.json", json(packageJson(product))],
     ["product-manifest.json", json(manifest)],
     ["scripts/verify-manifest.mjs", verifyManifestSource],
+    ["scripts/verify-screenshot.mjs", verifyScreenshotSource],
     ["src/cli.mjs", cliSource],
     ["src/client.mjs", clientSource],
+    ["src/demo-client.mjs", demoClientSource],
+    ["src/demo-server.mjs", demoServerSource],
     ["src/manifest.mjs", manifestSource],
     ["src/mcp.mjs", mcpSource],
     ["src/validation.mjs", validationSource],
     ["src/web-server.mjs", webServerSource],
     ["test/client.test.mjs", clientTestSource],
     ["test/cli.test.mjs", cliTestSource],
+    ["test/demo.test.mjs", demoTestSource],
     ["test/helpers/fake-api.mjs", fakeApiSource],
     ["test/mcp.test.mjs", mcpTestSource],
+    ["test/ui.test.mjs", uiTestSource],
     ["test/validation.test.mjs", validationTestSource],
     ["test/web.test.mjs", webTestSource],
     ["web/app.js", webAppSource],
     ["web/index.html", render(indexTemplate, substitutions)],
-    ["web/styles.css", stylesSource],
+    ["web/styles.css", render(stylesSource, substitutions)],
   ]);
   await Promise.all([...files].map(async ([relativePath, content]) => {
     const path = join(target, relativePath);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, "utf8");
   }));
-  await Promise.all([chmod(join(target, "src", "cli.mjs"), 0o755), chmod(join(target, "src", "mcp.mjs"), 0o755), chmod(join(target, "src", "web-server.mjs"), 0o755)]);
+  await Promise.all([chmod(join(target, "src", "cli.mjs"), 0o755), chmod(join(target, "src", "demo-server.mjs"), 0o755), chmod(join(target, "src", "mcp.mjs"), 0o755), chmod(join(target, "src", "web-server.mjs"), 0o755)]);
   return { slug: product.slug, path: target, moduleId: module.id, actions: actions.length };
 }
 

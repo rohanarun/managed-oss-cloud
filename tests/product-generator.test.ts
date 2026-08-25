@@ -32,13 +32,17 @@ describe("standalone product repository generator", () => {
 
       const manifest = JSON.parse(await readFile(join(outputRoot, "schemadeck", "product-manifest.json"), "utf8")) as {
         product: { slug: string };
-        module: { id: string };
-        actions: Array<{ inputSchema: { type?: string; additionalProperties?: boolean } }>;
+        module: { id: string; recordTypes: string[] };
+        experience: { workflowGroups: Array<{ actionIds: string[] }> };
+        actions: Array<{ recordType?: string; exampleInput: unknown; inputSchema: { type?: string; additionalProperties?: boolean } }>;
       };
       expect(manifest.product.slug).toBe("schemadeck");
       expect(manifest.module.id).toBe("tables");
       expect(manifest.actions).toHaveLength(9);
       expect(manifest.actions.every((action) => action.inputSchema.type === "object" && action.inputSchema.additionalProperties === false)).toBe(true);
+      expect(manifest.actions.every((action) => !action.recordType || manifest.module.recordTypes.includes(action.recordType))).toBe(true);
+      expect(manifest.experience.workflowGroups.flatMap((group) => group.actionIds)).toHaveLength(manifest.actions.length);
+      expect(JSON.stringify(manifest.actions.map((action) => action.exampleInput))).not.toMatch(/<[^<>]+>/);
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }
@@ -58,9 +62,9 @@ describe("standalone product repository generator", () => {
       ], { cwd: repositoryRoot });
       const productRoot = join(outputRoot, "signalmesh");
       const packageMetadata = JSON.parse(await readFile(join(productRoot, "package.json"), "utf8")) as { version: string };
-      expect(packageMetadata.version).toBe("0.1.1");
+      expect(packageMetadata.version).toBe("0.2.0");
       const { stdout } = await execute("npm", ["test"], { cwd: productRoot });
-      expect(stdout).toMatch(/tests 9/);
+      expect(stdout).toMatch(/tests 12/);
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }
