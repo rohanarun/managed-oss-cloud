@@ -2531,7 +2531,7 @@ async function writeProductRepository(root, product, force) {
 
 async function main() {
   const packageMetadata = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
-  if (packageMetadata.version !== "0.4.0") throw new Error("This generator requires managed-oss-cloud package metadata version 0.4.0.");
+  if (packageMetadata.version !== "0.4.3") throw new Error("This generator requires managed-oss-cloud package metadata version 0.4.3.");
   if (products.length !== 37 || new Set(products.map((product) => product.moduleId)).size !== 37 || new Set(products.map((product) => product.slug)).size !== 37) {
     throw new Error("The product registry must contain exactly 37 unique products and modules.");
   }
