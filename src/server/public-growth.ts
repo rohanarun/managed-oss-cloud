@@ -70,6 +70,19 @@ export interface PublishedPageProjection {
   contentHash: string;
 }
 
+export interface PublishedPageDiscoveryProjection {
+  id: string;
+  pageVersionId: string;
+  slug: string;
+  title: string;
+  description: string;
+  locale: string;
+  layout: PublishedPageProjection["layout"];
+  contentHash: string;
+  linkCount: number;
+  publicPath: string;
+}
+
 export interface ActiveQrProjection {
   routeId: string;
   destinationVersionId: string;
@@ -383,6 +396,42 @@ export class PublicGrowthService {
 
   async pageBySlug(workspaceSlug: string, pageSlug: string) {
     return this.page(await this.workspaceBySlug(workspaceSlug), pageSlug);
+  }
+
+  async pagesBySlug(workspaceSlug: string): Promise<PublishedPageDiscoveryProjection[]> {
+    const workspace = await this.workspaceBySlug(workspaceSlug);
+    const [pages, versions] = await Promise.all([
+      this.workflow(workspace, "brand-pages", "page"),
+      this.workflow(workspace, "brand-pages", "page-version"),
+    ]);
+    const candidates = pages.filter((page) => page.state === "published" && page.data.public === true && typeof page.data.slug === "string" && typeof page.data.activePageVersionId === "string");
+    const slugCounts = new Map<string, number>();
+    for (const page of candidates) slugCounts.set(String(page.data.slug), (slugCounts.get(String(page.data.slug)) ?? 0) + 1);
+    const discovered: PublishedPageDiscoveryProjection[] = [];
+    for (const page of candidates) {
+      const slug = String(page.data.slug);
+      if (slugCounts.get(slug) !== 1) continue;
+      const version = versions.find((candidate) => candidate.id === page.data.activePageVersionId);
+      if (!version) continue;
+      try {
+        const projection = await this.resolvePage(workspace, page, version);
+        discovered.push({
+          id: projection.pageId,
+          pageVersionId: projection.pageVersionId,
+          slug: projection.slug,
+          title: projection.title,
+          description: projection.description,
+          locale: projection.locale,
+          layout: projection.layout,
+          contentHash: projection.contentHash,
+          linkCount: projection.links.length,
+          publicPath: `/p/${encodeURIComponent(workspace.slug)}/${encodeURIComponent(projection.slug)}`,
+        });
+      } catch (error) {
+        if (!(error instanceof PublicGrowthError)) throw error;
+      }
+    }
+    return discovered.sort((left, right) => left.slug.localeCompare(right.slug));
   }
 
   async pageByWorkspaceId(workspaceId: string, pageVersionId: string) {

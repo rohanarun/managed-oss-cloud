@@ -172,6 +172,46 @@ describe("MIT-native shared suite", () => {
     expect(bearerWorkspace.body.workspace.enabledModuleIds).toEqual(["crm", "inbox"]);
   });
 
+  it("serves module-scoped record pages, search, opaque cursors, capabilities, and private details", async () => {
+    const store = new MemorySuiteStore("starter");
+    const app = await createApp({ repository: new MemoryRepository(), suiteStore: store, synchronizeSuiteEntitlements: false });
+    const owner = request.agent(app);
+    const signup = await owner.post("/api/auth/signup").send({ displayName: "Read Model Owner", email: "read-model-owner@example.com", password: "long-safe-password" });
+    expect((await owner.post("/api/suite/modules/crm/enable")).status).toBe(201);
+    const first = await store.createRecord(signup.body.user.id, { moduleId: "crm", recordType: "contact", title: "Alpha first", state: "active", data: { email: "first@example.com" } });
+    const second = await store.createRecord(signup.body.user.id, { moduleId: "crm", recordType: "contact", title: "Alpha second", state: "archived", data: { email: "second@example.com" } });
+    if (!first || !second) throw new Error("Expected record-page fixtures.");
+
+    const capabilities = await owner.get("/api/suite/modules/crm/capabilities");
+    expect(capabilities.status).toBe(200);
+    expect(capabilities.body.capabilities).toMatchObject({ version: "module-read-model.v1", moduleId: "crm", recordDetail: true });
+
+    const page = await owner.get("/api/suite/modules/crm/records").query({ search: "alpha", limit: 1 });
+    expect(page.status).toBe(200);
+    expect(page.body.records).toHaveLength(1);
+    expect(page.body.nextCursor).toEqual(expect.any(String));
+    expect(page.body.records[0]).not.toHaveProperty("data");
+    expect(JSON.stringify(page.body.records)).not.toContain("@example.com");
+    const continuation = await owner.get("/api/suite/modules/crm/records").query({ search: "alpha", limit: 1, cursor: page.body.nextCursor });
+    expect(continuation.status).toBe(200);
+    expect(new Set([page.body.records[0].id, continuation.body.records[0].id])).toEqual(new Set([first.id, second.id]));
+    expect((await owner.get("/api/suite/modules/crm/records").query({ state: "active", limit: 10 })).body.records.map((record: { id: string }) => record.id)).toEqual([first.id]);
+    expect((await owner.get("/api/suite/modules/crm/records").query({ state: "active", limit: 1, cursor: page.body.nextCursor })).status).toBe(400);
+
+    const detail = await owner.get(`/api/suite/modules/crm/records/${first.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.record).toMatchObject({ id: first.id, data: { email: "first@example.com" } });
+    expect((await owner.get(`/api/suite/modules/inbox/records/${first.id}`)).status).toBe(404);
+    expect((await owner.get("/api/suite/modules/not-real/records")).status).toBe(404);
+
+    const outsider = request.agent(app);
+    const outsiderSignup = await outsider.post("/api/auth/signup").send({ displayName: "Read Model Outsider", email: "read-model-outsider@example.com", password: "long-safe-password" });
+    expect((await outsider.post("/api/suite/modules/crm/enable")).status).toBe(201);
+    const outsideRecord = await store.createRecord(outsiderSignup.body.user.id, { moduleId: "crm", recordType: "contact", title: "Other tenant", data: { email: "outside@example.com" } });
+    if (!outsideRecord) throw new Error("Expected outsider fixture.");
+    expect((await owner.get(`/api/suite/modules/crm/records/${outsideRecord.id}`)).status).toBe(404);
+  });
+
   it("enforces read, write, and AI scopes while keeping bearer tokens out of account administration", async () => {
     const app = await createApp({ repository: new MemoryRepository(), suiteStore: new MemorySuiteStore("starter"), synchronizeSuiteEntitlements: false });
     const agent = request.agent(app);
@@ -348,9 +388,17 @@ describe("MIT-native shared suite", () => {
     expect(navigation.text).toContain("Continue to example.com?");
     expect((await request(app).get(`/embeds/pages/${workspace.id}/${pageVersionRecord.id}`)).text).toContain(`data-page-version="${pageVersionRecord.id}"`);
 
-    const feedback = await request(app).post(`/api/public/${workspace.slug}/feedback`).set("Origin", "https://customer.example").send({ title: "Add exports", description: "We need a CSV export." });
+    const feedbackBoard = recordOf(await run("feedback", "board-create", { name: "Product direction", visibility: "public", votingPolicy: "public", idempotencyKey: idempotency("public-feedback-board") }), "feedback-board");
+    const feedbackPage = await request(app).get(`/feedback/${workspace.slug}/${feedbackBoard.id}`);
+    expect(feedbackPage.status).toBe(200);
+    expect(feedbackPage.text).toContain("Product direction");
+    const feedback = await request(app).post(`/api/public/feedback/${workspace.slug}/boards/${feedbackBoard.id}/requests`).send({ title: "Add exports", problem: "We need a CSV export.", consent: true, idempotencyKey: idempotency("public-feedback-request") });
     expect(feedback.status).toBe(201);
     expect(feedback.headers["access-control-allow-origin"]).toBe("*");
+    expect(feedback.body).toMatchObject({ schema: "idealoop-request-result.v1", outcome: "created", request: { title: "Add exports", voteCount: 0 } });
+    const legacyFeedback = await request(app).post(`/api/public/${workspace.slug}/feedback`).send({ title: "Bypass", description: "Must not create an untyped suggestion." });
+    expect(legacyFeedback.status).toBe(410);
+    expect(legacyFeedback.body.replacement).toContain("/boards/:boardId/requests");
 
     const consentPolicyVersion = "</script><script>globalThis.testimonialXss=true</script>";
     const collection = await run("testimonials", "collection-create", { name: "Customer outcomes", purpose: "Publish reviewed customer outcomes.", consentPolicyVersion, retentionDays: 730, allowedLocales: ["en-US"], idempotencyKey: idempotency("public-collection") });

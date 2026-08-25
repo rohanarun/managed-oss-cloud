@@ -168,6 +168,24 @@ function scheduleAllows(content: Record<string, unknown>, candidate: { startsAt:
   });
 }
 
+function scheduleSlotAligned(content: Record<string, unknown>, candidate: { startsAt: string; endsAt: string }, durationMinutes: number) {
+  const zone = timeZone(content.timeZone);
+  const windows = Array.isArray(content.windows) ? content.windows as Array<{ dayOfWeek: number; start: string; end: string }> : [];
+  const start = zonedMinute(new Date(candidate.startsAt), zone);
+  const end = zonedMinute(new Date(candidate.endsAt), zone);
+  if (start.dayOfWeek !== end.dayOfWeek) return false;
+  return windows.some((window) => {
+    const [startHour, startMinute] = window.start.split(":").map(Number);
+    const [endHour, endMinute] = window.end.split(":").map(Number);
+    const windowStart = startHour * 60 + startMinute;
+    const windowEnd = endHour * 60 + endMinute;
+    return window.dayOfWeek === start.dayOfWeek
+      && start.minute >= windowStart
+      && end.minute <= windowEnd
+      && (start.minute - windowStart) % durationMinutes === 0;
+  });
+}
+
 function normalizedBookingInvitee(value: unknown) {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invitee must be an object.");
@@ -260,11 +278,19 @@ async function executeSchedule(store: SuiteStore, userId: string, action: SuiteA
     if (to <= from || to.getTime() - from.getTime() > 31 * 86_400_000) throw new Error("Availability range must be increasing and no longer than 31 days.");
     const durationMs = Number(release.data.durationMinutes) * 60_000;
     const scheduleContent = await releaseScheduleContent(store, userId, release);
+    const activeBookings = (await store.listRecords(userId, { moduleId: "schedule", recordType: "booking", limit: 10_000 }))
+      .filter((booking) => ["requested", "confirmed"].includes(booking.state));
     const slots: Array<Record<string, unknown>> = [];
     for (const hostId of release.data.hostIds as string[]) {
-      for (let cursor = from.getTime(); cursor + durationMs <= to.getTime() && slots.length < 500; cursor += durationMs) {
+      for (let cursor = Math.ceil(from.getTime() / 60_000) * 60_000; cursor + durationMs <= to.getTime() && slots.length < 500;) {
         const candidate = { startsAt: new Date(cursor).toISOString(), endsAt: new Date(cursor + durationMs).toISOString() };
-        if (scheduleAllows(scheduleContent, candidate) && !await scheduleConflict(store, userId, hostId, candidate)) slots.push({ hostId, ...candidate });
+        if (!scheduleSlotAligned(scheduleContent, candidate, Number(release.data.durationMinutes))) {
+          cursor += 60_000;
+          continue;
+        }
+        const conflict = activeBookings.find((booking) => booking.data.hostId === hostId && overlaps(candidate, { startsAt: String(booking.data.startsAt), endsAt: String(booking.data.endsAt) }));
+        if (!conflict) slots.push({ hostId, ...candidate });
+        cursor += durationMs;
       }
     }
     const snapshotHash = digest({ releaseId: release.id, releaseHash: release.data.contentHash, from: from.toISOString(), to: to.toISOString(), timeZone: input.timeZone, slots });
@@ -287,7 +313,8 @@ async function executeSchedule(store: SuiteStore, userId: string, action: SuiteA
     if (!Array.isArray(release.data.hostIds) || !release.data.hostIds.includes(hostId)) throw new Error("The host is not eligible for this event release.");
     const requested = interval(input);
     if ((new Date(requested.endsAt).getTime() - new Date(requested.startsAt).getTime()) / 60_000 !== release.data.durationMinutes) throw new Error("The requested interval does not match the published event duration.");
-    if (!scheduleAllows(await releaseScheduleContent(store, userId, release), requested)) throw new Error("The requested interval is outside the exact published host availability.");
+    const scheduleContent = await releaseScheduleContent(store, userId, release);
+    if (!scheduleAllows(scheduleContent, requested) || !scheduleSlotAligned(scheduleContent, requested, Number(release.data.durationMinutes))) throw new Error("The requested interval is outside the exact published host availability or slot grid.");
     const key = idempotencyKey(input);
     const invitee = normalizedBookingInvitee(input.invitee);
     const inviteeDigest = invitee ? digest(invitee) : undefined;

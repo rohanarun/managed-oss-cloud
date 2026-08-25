@@ -23,10 +23,16 @@ import { ManagedGoogleOAuthBroker, ManagedOAuthBrokerError, type ManagedGoogleOA
 import { createRepository, type Repository } from "./repository.js";
 import { createSuiteStore, type SuiteStore } from "./suite-store.js";
 import { executeSuiteAction, type SuiteEngineDependencies } from "./suite-engine.js";
+import { createSuiteModuleReadModelService, SuiteModuleReadModelError } from "./module-read-model.js";
+import { suiteRecordPageDefaultLimit, suiteRecordPageMaxLimit } from "../shared/module-read-model.js";
+import { SuiteRecordPageCursorError, SuiteRecordPageInputError } from "./suite-record-page.js";
 import { createExtendedExternalEvidenceVerifier } from "./extended-external-evidence.js";
 import { PublicSigningService, validatePublicVerificationKey, type PublicVerificationKey } from "./public-signing.js";
 import { resolvePublicHttpsDestination, type PublicDestinationResolver } from "./public-destination.js";
 import { PublicGrowthError, PublicGrowthService, type PublishedPageProjection, type PublishedWidgetProjection } from "./public-growth.js";
+import { createPublicGiveawayRouter } from "./public-giveaway-router.js";
+import { createPublicFeedbackRouter } from "./public-feedback-router.js";
+import { createPublicKnowledgeRouter } from "./public-knowledge-router.js";
 import { HostedEsignService, createHostedEsignRouter, type HostedEsignObjectLoader, type HostedEsignRateLimiter } from "./hosted-esign.js";
 import {
   PUBLIC_BOOKING_POLICY_VERSION,
@@ -69,6 +75,13 @@ const oauthCallbackSchema = z.object({ state: z.string().min(8).max(8_000), code
 const oauthStartSchema = z.object({ application_id: z.string().uuid(), origin: z.string().url().max(2_048), upstream_state: z.string().min(8).max(2_000) });
 const moduleIdSchema = z.object({ id: z.string().regex(/^[a-z][a-z0-9-]{1,40}$/) });
 const suiteRecordQuerySchema = z.object({ moduleId: z.string().optional(), recordType: z.string().max(80).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
+const suiteModuleRecordPageQuerySchema = z.object({
+  recordType: z.string().trim().min(1).max(200).optional(),
+  state: z.string().trim().min(1).max(200).optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(suiteRecordPageMaxLimit).default(suiteRecordPageDefaultLimit),
+  cursor: z.string().min(1).max(2_048).optional(),
+}).strict();
 const suiteRecordSchema = z.object({ moduleId: z.string(), recordType: z.string().min(1).max(80), title: z.string().trim().min(1).max(300), state: z.string().min(1).max(80).optional(), data: z.record(z.string(), z.unknown()).optional() });
 const suiteRecordPatchSchema = z.object({ title: z.string().trim().min(1).max(300).optional(), state: z.string().min(1).max(80).optional(), data: z.record(z.string(), z.unknown()).optional() }).refine((value) => Object.keys(value).length > 0);
 const suiteAiActionSchema = z.object({ moduleId: z.string(), goal: z.string().trim().min(3).max(4_000), context: z.record(z.string(), z.unknown()).optional() });
@@ -82,7 +95,6 @@ const apiTokenSchema = z.object({
 const workspaceMemberSchema = z.object({ email: z.string().trim().toLowerCase().email(), role: z.enum(["admin", "member", "viewer"]) });
 const suiteActionSchema = z.object({ input: z.record(z.string(), z.unknown()).default({}) });
 const publicWorkspaceSchema = z.object({ workspaceSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,80}$/), moduleId: z.enum(["feedback", "knowledge", "testimonials", "brand-pages", "giveaways"]) });
-const publicFeedbackSchema = z.object({ title: z.string().trim().min(3).max(160), description: z.string().trim().min(3).max(5_000), email: z.string().email().optional() });
 const consentPurposes = z.array(z.enum(["contest-administration", "referral-attribution", "testimonial-publication", "collection-follow-up"])).min(1).max(20).refine((purposes) => new Set(purposes).size === purposes.length, "Consent purposes must be unique.");
 const publicTestimonialSchema = z.object({
   authorName: z.string().trim().min(1).max(120),
@@ -170,14 +182,31 @@ function publicGrowthFailure(response: Response, error: unknown) {
   throw error;
 }
 function publishedPageHtml(page: PublishedPageProjection) {
-  const links = page.links.map((link) => `<a href="/out/${encodeURIComponent(page.workspaceId)}/${encodeURIComponent(page.pageVersionId)}/${encodeURIComponent(link.destinationVersionId)}" aria-label="${escapeHtml(link.accessibilityLabel || link.label)}">${escapeHtml(link.label)}</a>`).join("");
   const { background, foreground, accent, radiusPx } = page.theme;
-  return `<!doctype html><html lang="${escapeHtml(page.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin"><title>${escapeHtml(page.title)}</title><style>:root{color-scheme:light dark}body{margin:0;font:16px system-ui;background:${background};color:${foreground}}main{width:min(92%,680px);margin:10vh auto;text-align:center}h1{font-size:clamp(2.5rem,8vw,5rem);letter-spacing:-.06em}a{display:block;margin:12px;padding:16px;border:2px solid ${accent};border-radius:${radiusPx}px;color:${foreground};background:${background};text-decoration:none}a:focus-visible{outline:3px solid ${accent};outline-offset:3px}</style></head><body><main data-page-version="${escapeHtml(page.pageVersionId)}"><h1>${escapeHtml(page.title)}</h1><p>${escapeHtml(page.description)}</p>${links}</main></body></html>`;
+  const href = (destinationVersionId: string) => `/out/${encodeURIComponent(page.workspaceId)}/${encodeURIComponent(page.pageVersionId)}/${encodeURIComponent(destinationVersionId)}`;
+  const stackLinks = page.links.map((link) => `<a class="stack-link" href="${href(link.destinationVersionId)}" aria-label="${escapeHtml(link.accessibilityLabel || link.label)}"><span>${escapeHtml(link.label)}</span><span aria-hidden="true">&rarr;</span></a>`).join("");
+  const cardLinks = page.links.map((link, index) => `<a class="link-card" href="${href(link.destinationVersionId)}" aria-label="${escapeHtml(link.accessibilityLabel || link.label)}"><span class="link-number">${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(link.label)}</strong><span class="link-action" aria-hidden="true">Open &rarr;</span></a>`).join("");
+  const editorialLinks = page.links.map((link, index) => `<li><a href="${href(link.destinationVersionId)}" aria-label="${escapeHtml(link.accessibilityLabel || link.label)}"><span class="link-number">${String(index + 1).padStart(2, "0")}</span><span class="editorial-label"><strong>${escapeHtml(link.label)}</strong><small>Visit published destination</small></span><span class="editorial-arrow" aria-hidden="true">&rarr;</span></a></li>`).join("");
+  const main = page.layout === "cards"
+    ? `<main class="layout-cards" data-layout="cards" data-page-version="${escapeHtml(page.pageVersionId)}"><header class="cards-hero"><div><p class="kicker">BeaconPage collection</p><h1>${escapeHtml(page.title)}</h1></div><p class="page-description">${escapeHtml(page.description)}</p></header><section class="card-grid" aria-label="Published links">${cardLinks}</section></main>`
+    : page.layout === "editorial"
+      ? `<main class="layout-editorial" data-layout="editorial" data-page-version="${escapeHtml(page.pageVersionId)}"><div class="editorial-shell"><header class="editorial-intro"><p class="kicker">BeaconPage index</p><h1>${escapeHtml(page.title)}</h1><p class="page-description">${escapeHtml(page.description)}</p></header><nav aria-label="Published links"><ol class="editorial-index">${editorialLinks}</ol></nav></div></main>`
+      : `<main class="layout-stack" data-layout="stack" data-page-version="${escapeHtml(page.pageVersionId)}"><header class="stack-intro"><p class="kicker">BeaconPage</p><h1>${escapeHtml(page.title)}</h1><p class="page-description">${escapeHtml(page.description)}</p></header><nav class="stack-links" aria-label="Published links">${stackLinks}</nav></main>`;
+  return `<!doctype html><html lang="${escapeHtml(page.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin-when-cross-origin"><meta name="theme-color" content="${accent}"><title>${escapeHtml(page.title)}</title><style>:root{--page-bg:${background};--page-fg:${foreground};--page-accent:${accent};--page-radius:${radiusPx}px}*{box-sizing:border-box}html{min-height:100%;background:var(--page-bg)}body{min-height:100vh;margin:0;background:var(--page-bg);color:var(--page-fg);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}a{color:inherit;text-decoration:none}a:focus-visible{outline:3px solid var(--page-accent);outline-offset:4px}.kicker{margin:0 0 1rem;color:var(--page-accent);font-size:.76rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.page-description{color:var(--page-fg);opacity:.76}.layout-stack{width:min(92vw,44rem);margin:0 auto;padding:clamp(4rem,12vh,9rem) 0 7rem;text-align:center}.stack-intro h1{max-width:13ch;margin:.2rem auto 1.2rem;font-size:clamp(3rem,10vw,6.4rem);line-height:.9;letter-spacing:-.075em}.stack-intro .page-description{max-width:35rem;margin:0 auto}.stack-links{display:grid;gap:.8rem;margin-top:3rem}.stack-link{display:flex;align-items:center;justify-content:space-between;gap:1rem;border:1px solid var(--page-accent);border-radius:var(--page-radius);padding:1.05rem 1.25rem;text-align:left;font-weight:750}.stack-link:hover{background:var(--page-accent);color:var(--page-bg)}.layout-cards{width:min(94vw,76rem);margin:0 auto;padding:clamp(3rem,9vh,7rem) 0 7rem}.cards-hero{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(18rem,.6fr);gap:clamp(2rem,8vw,8rem);align-items:end;padding-bottom:clamp(3rem,8vh,7rem)}.cards-hero h1{max-width:12ch;margin:0;font-size:clamp(3.3rem,8vw,7.8rem);line-height:.84;letter-spacing:-.08em}.cards-hero .page-description{max-width:28rem;margin:0;font-size:1.08rem}.card-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-flow:dense;gap:1rem}.link-card{min-height:15rem;display:flex;flex-direction:column;justify-content:space-between;border:1px solid var(--page-accent);border-radius:var(--page-radius);padding:1.4rem}.link-card:nth-child(3n+1){grid-column:span 2;min-height:18rem}.link-card:hover{background:var(--page-accent);color:var(--page-bg)}.link-card strong{max-width:18ch;font-size:clamp(1.6rem,4vw,3.2rem);line-height:1;letter-spacing:-.04em}.link-number,.link-action{font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}.layout-editorial{width:min(94vw,80rem);margin:0 auto;padding:clamp(4rem,11vh,9rem) 0 8rem}.editorial-shell{display:grid;grid-template-columns:minmax(20rem,.8fr) minmax(0,1.2fr);gap:clamp(3rem,10vw,10rem);align-items:start}.editorial-intro{position:sticky;top:3rem}.editorial-intro h1{max-width:11ch;margin:.25rem 0 1.4rem;font-family:Georgia,serif;font-size:clamp(3.5rem,7.5vw,7.2rem);font-weight:500;line-height:.88;letter-spacing:-.065em}.editorial-intro .page-description{max-width:31rem;font-size:1.05rem}.editorial-index{margin:0;padding:0;border-top:1px solid var(--page-accent);list-style:none}.editorial-index li{border-bottom:1px solid var(--page-accent)}.editorial-index a{display:grid;grid-template-columns:3rem 1fr auto;gap:1rem;align-items:center;padding:1.5rem .2rem}.editorial-index a:hover .editorial-label strong{color:var(--page-accent)}.editorial-label{display:grid;gap:.25rem}.editorial-label strong{font-family:Georgia,serif;font-size:clamp(1.5rem,3vw,2.5rem);font-weight:500;line-height:1}.editorial-label small{opacity:.66}.editorial-arrow{font-size:1.5rem}@media(max-width:760px){.cards-hero,.editorial-shell{grid-template-columns:1fr}.cards-hero{align-items:start}.card-grid{grid-template-columns:1fr}.link-card:nth-child(3n+1){grid-column:auto}.editorial-intro{position:static}.editorial-index a{grid-template-columns:2.4rem 1fr auto}}@media(prefers-reduced-motion:no-preference){.stack-link,.link-card,.editorial-label strong{transition:background-color .2s,color .2s,transform .2s}.stack-link:hover,.link-card:hover{transform:translateY(-2px)}}</style></head><body>${main}</body></html>`;
 }
 function publishedWidgetHtml(widget: PublishedWidgetProjection) {
   const { accent, surface, text, radiusPx } = widget.theme;
-  const quotes = widget.testimonials.map((testimonial) => `<article><blockquote>${escapeHtml(testimonial.content)}</blockquote><p>${escapeHtml(testimonial.attributionLabel)}</p>${testimonial.disclosure ? `<small>${escapeHtml(testimonial.disclosure)}</small>` : ""}</article>`).join("");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Testimonials</title><style>body{margin:0;font:16px system-ui;background:${surface};color:${text}}main{display:grid;gap:16px;padding:16px}article{border:1px solid ${accent};border-radius:${radiusPx}px;padding:18px}blockquote{margin:0}p{font-weight:700}</style></head><body><main data-widget-version="${escapeHtml(widget.id)}">${quotes}</main></body></html>`;
+  const figure = (testimonial: PublishedWidgetProjection["testimonials"][number], index: number, className: string) => `<article class="${className}" id="testimonial-${index + 1}"><figure><blockquote><p>${escapeHtml(testimonial.content)}</p></blockquote><figcaption><strong>${escapeHtml(testimonial.attributionLabel)}</strong>${testimonial.disclosure ? `<small>${escapeHtml(testimonial.disclosure)}</small>` : ""}</figcaption></figure></article>`;
+  const gridQuotes = widget.testimonials.map((testimonial, index) => figure(testimonial, index, "grid-quote")).join("");
+  const carouselQuotes = widget.testimonials.map((testimonial, index) => `<li>${figure(testimonial, index, "carousel-quote")}</li>`).join("");
+  const carouselNavigation = widget.testimonials.map((_testimonial, index) => `<a href="#testimonial-${index + 1}"><span class="visually-hidden">Show testimonial </span>${String(index + 1).padStart(2, "0")}</a>`).join("");
+  const wallQuotes = widget.testimonials.map((testimonial, index) => figure(testimonial, index, "wall-quote")).join("");
+  const content = widget.layout === "carousel"
+    ? `<main class="layout-carousel" data-layout="carousel" data-widget-version="${escapeHtml(widget.id)}" aria-labelledby="testimonial-heading"><header><p class="eyebrow">ProofPort stories</p><h1 id="testimonial-heading">In their words</h1><p class="introduction">Scroll through independently reviewed customer experiences.</p></header><ol class="carousel-track" aria-label="Published testimonial slides">${carouselQuotes}</ol><nav class="carousel-navigation" aria-label="Choose a testimonial">${carouselNavigation}</nav></main>`
+    : widget.layout === "quote-wall"
+      ? `<main class="layout-quote-wall" data-layout="quote-wall" data-widget-version="${escapeHtml(widget.id)}" aria-labelledby="testimonial-heading"><header><p class="eyebrow">ProofPort evidence</p><h1 id="testimonial-heading">Results, in customers&rsquo; own words.</h1></header><section class="quote-wall" aria-label="Published testimonials">${wallQuotes}</section></main>`
+      : `<main class="layout-grid" data-layout="grid" data-widget-version="${escapeHtml(widget.id)}" aria-labelledby="testimonial-heading"><header><p class="eyebrow">ProofPort collection</p><h1 id="testimonial-heading">Customer stories</h1><p class="introduction">Reviewed experiences published with explicit consent.</p></header><section class="testimonial-grid" aria-label="Published testimonials">${gridQuotes}</section></main>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="theme-color" content="${surface}"><title>Customer testimonials</title><style>:root{--proof-accent:${accent};--proof-surface:${surface};--proof-text:${text};--proof-radius:${radiusPx}px}*{box-sizing:border-box}html{min-height:100%;background:var(--proof-surface)}body{min-height:100vh;margin:0;background:var(--proof-surface);color:var(--proof-text);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}main{width:min(94vw,76rem);margin:0 auto;padding:clamp(3rem,9vw,7rem) 0}.eyebrow{margin:0 0 1rem;color:var(--proof-accent);font-size:.75rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{max-width:16ch;margin:0;font-size:clamp(2.8rem,7vw,6.8rem);line-height:.9;letter-spacing:-.065em}.introduction{max-width:36rem;margin:1.5rem 0 0;opacity:.76}figure,blockquote{margin:0}blockquote p{margin:0;font-size:clamp(1.3rem,2.6vw,2.25rem);font-weight:650;line-height:1.18;letter-spacing:-.025em}blockquote p::before{content:'“';color:var(--proof-accent)}blockquote p::after{content:'”';color:var(--proof-accent)}figcaption{display:grid;gap:.35rem;margin-top:2rem}figcaption strong{font-size:.94rem}figcaption small{max-width:36rem;opacity:.65}.testimonial-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-flow:dense;gap:1rem;margin-top:4rem}.grid-quote{grid-column:span 6;min-height:20rem;border:1px solid var(--proof-accent);border-radius:var(--proof-radius);padding:clamp(1.4rem,4vw,2.6rem)}.grid-quote:nth-child(3n+1){grid-column:span 12}.grid-quote figure{height:100%;display:flex;flex-direction:column;justify-content:space-between}.layout-carousel{overflow:hidden}.layout-carousel header{display:grid;grid-template-columns:minmax(0,1fr) minmax(18rem,.45fr);gap:3rem;align-items:end}.layout-carousel .introduction{margin:0}.carousel-track{display:grid;grid-auto-columns:min(78vw,48rem);grid-auto-flow:column;gap:1.25rem;margin:4rem calc((100vw - min(94vw,76rem)) / -2) 0;padding:0 max(3vw,calc((100vw - min(94vw,76rem)) / 2)) 1.2rem;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:inline mandatory;list-style:none}.carousel-track>li{scroll-snap-align:center}.carousel-quote{height:100%;min-height:27rem;display:grid;align-items:end;border-radius:var(--proof-radius);padding:clamp(1.8rem,5vw,4rem);background:var(--proof-accent);color:var(--proof-surface)}.carousel-quote blockquote p{font-size:clamp(2rem,4vw,4.4rem);font-weight:600;line-height:1.02}.carousel-quote blockquote p::before,.carousel-quote blockquote p::after{color:currentColor}.carousel-navigation{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1rem}.carousel-navigation a{display:grid;width:2.8rem;height:2.8rem;place-items:center;border:1px solid var(--proof-accent);border-radius:50%;color:var(--proof-text);font-size:.75rem;font-weight:800;text-decoration:none}.carousel-navigation a:focus-visible{outline:3px solid var(--proof-accent);outline-offset:3px}.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}.layout-quote-wall{width:min(94vw,86rem)}.layout-quote-wall h1{max-width:18ch;font-family:Georgia,serif;font-weight:500}.quote-wall{columns:3 18rem;column-gap:1rem;margin-top:4rem}.wall-quote{break-inside:avoid;margin:0 0 1rem;border-top:3px solid var(--proof-accent);padding:1.5rem 1.25rem 2rem;background:color-mix(in srgb,var(--proof-accent) 8%,var(--proof-surface));border-radius:0 0 var(--proof-radius) var(--proof-radius)}.wall-quote:nth-child(3n+2) blockquote p{font-family:Georgia,serif;font-size:clamp(1.65rem,3vw,3rem);font-weight:500}.wall-quote:nth-child(3n) {border-top-width:8px}@media(max-width:720px){.testimonial-grid{grid-template-columns:1fr}.grid-quote,.grid-quote:nth-child(3n+1){grid-column:auto}.layout-carousel header{grid-template-columns:1fr}.layout-carousel .introduction{margin-top:1.5rem}.carousel-track{grid-auto-columns:88vw}.carousel-quote{min-height:24rem}}</style></head><body>${content}</body></html>`;
 }
 function publicRecordProjection(record: Awaited<ReturnType<SuiteStore["listPublicRecords"]>>[number], moduleId: string) {
   const allowlists: Record<string, string[]> = {
@@ -199,6 +228,7 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
   }
   await repository.initialize();
   await suiteStore.initialize();
+  const suiteModuleReadModel = createSuiteModuleReadModelService(suiteStore);
   const billing = createBillingService(repository, options.billingGateway, options.billingSettings);
   const workerBootstrapToken = options.workerBootstrapToken ?? config.WORKER_BOOTSTRAP_TOKEN;
   const configuredWorkerIdentityPolicy = parseGcpWorkerIdentityPolicy({
@@ -402,6 +432,9 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
     }
     next();
   });
+  app.use(createPublicGiveawayRouter({ store: suiteStore }));
+  app.use(createPublicFeedbackRouter({ suiteStore }));
+  app.use(createPublicKnowledgeRouter({ store: suiteStore }));
 
   app.get("/.well-known/managed-oss-public-signing-keys.json", (_request, response) => {
     if (!publicSigning) return response.status(503).json({ error: "Public signing is not configured." });
@@ -704,6 +737,41 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
       return response.status(409).json({ error: error instanceof Error ? error.message : "The module action could not run." });
     }
   });
+  app.get("/api/suite/modules/:id/capabilities", requireSuiteScope("read"), async (request, response) => {
+    const parsed = moduleIdSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Suite module not found." });
+    try {
+      return response.json({ capabilities: suiteModuleReadModel.capabilities(parsed.data.id) });
+    } catch (error) {
+      if (error instanceof SuiteModuleReadModelError) return response.status(404).json({ error: "Suite module not found." });
+      throw error;
+    }
+  });
+  app.get("/api/suite/modules/:id/records", requireSuiteScope("read"), async (request, response) => {
+    const parsedModule = moduleIdSchema.safeParse(request.params);
+    if (!parsedModule.success) return response.status(404).json({ error: "Suite module not found." });
+    const parsedQuery = suiteModuleRecordPageQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) return response.status(400).json({ error: "Invalid record page query or cursor." });
+    try {
+      return response.json(await suiteModuleReadModel.listRecordPage(response.locals.user.id, parsedModule.data.id, parsedQuery.data));
+    } catch (error) {
+      if (error instanceof SuiteModuleReadModelError) return response.status(404).json({ error: "Suite module not found." });
+      if (error instanceof SuiteRecordPageInputError || error instanceof SuiteRecordPageCursorError) return response.status(400).json({ error: "Invalid record page query or cursor." });
+      throw error;
+    }
+  });
+  app.get("/api/suite/modules/:id/records/:recordId", requireSuiteScope("read"), async (request, response) => {
+    const parsedModule = moduleIdSchema.safeParse(request.params);
+    const parsedRecordId = z.string().uuid().safeParse(request.params.recordId);
+    if (!parsedModule.success || !parsedRecordId.success) return response.status(404).json({ error: "Record not found." });
+    try {
+      const record = await suiteModuleReadModel.getRecordDetail(response.locals.user.id, parsedModule.data.id, parsedRecordId.data);
+      return record ? response.json({ record }) : response.status(404).json({ error: "Record not found." });
+    } catch (error) {
+      if (error instanceof SuiteModuleReadModelError) return response.status(404).json({ error: "Suite module not found." });
+      throw error;
+    }
+  });
   app.get("/api/suite/records", requireSuiteScope("read"), async (request, response) => {
     const parsed = suiteRecordQuerySchema.safeParse(request.query);
     if (!parsed.success) return response.status(400).json({ error: "Invalid record query." });
@@ -958,18 +1026,18 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
       try { return response.json({ moduleId: "giveaways", records: await publicGrowth.contestsBySlug(parsed.data.workspaceSlug) }); }
       catch (error) { return publicGrowthFailure(response, error); }
     }
-    if (parsed.data.moduleId === "brand-pages") return response.json({ moduleId: "brand-pages", records: [] });
+    if (parsed.data.moduleId === "brand-pages") {
+      try { return response.json({ moduleId: "brand-pages", records: await publicGrowth.pagesBySlug(parsed.data.workspaceSlug) }); }
+      catch (error) { return publicGrowthFailure(response, error); }
+    }
     const recordType = parsed.data.moduleId === "knowledge" ? "page" : undefined;
     const records = await suiteStore.listPublicRecords(parsed.data.workspaceSlug, { moduleId: parsed.data.moduleId, recordType, limit: 100 });
     return response.json({ moduleId: parsed.data.moduleId, records: records.map((record) => publicRecordProjection(record, parsed.data.moduleId)) });
   });
-  app.post("/api/public/:workspaceSlug/feedback", publicWriteLimiter, async (request, response) => {
-    const workspaceSlug = String(request.params.workspaceSlug);
-    const parsed = publicFeedbackSchema.safeParse(request.body);
-    if (!parsed.success) return response.status(400).json({ error: "Provide a title and feedback description." });
-    const record = await suiteStore.createPublicRecord(workspaceSlug, { moduleId: "feedback", recordType: "suggestion", title: parsed.data.title, state: "open", data: { description: parsed.data.description, email: parsed.data.email, source: "public-form", public: false } });
-    return record ? response.status(201).json({ id: record.id, state: record.state }) : response.status(404).json({ error: "Feedback collection is not enabled for this workspace." });
-  });
+  app.post("/api/public/:workspaceSlug/feedback", publicWriteLimiter, (_request, response) => response.status(410).json({
+    error: "The legacy unscoped feedback endpoint is retired.",
+    replacement: "POST /api/public/feedback/:workspaceSlug/boards/:boardId/requests",
+  }));
   app.post("/api/public/:workspaceSlug/testimonials", publicWriteLimiter, (_request, response) => response.status(404).json({ error: "Use a token-bound ProofPort collection request." }));
   app.post("/api/public/:workspaceSlug/giveaways/:contestId/entries", publicWriteLimiter, async (request, response) => {
     const workspaceSlug = String(request.params.workspaceSlug);
@@ -1134,7 +1202,12 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
     if (!parsed.success) return response.status(404).send("Published testimonial widget not found.");
     try {
       const widget = await publicGrowth.widgetByWorkspaceId(parsed.data.workspaceId, parsed.data.widgetVersionId);
-      response.set("Cache-Control", "public, max-age=60");
+      response.set({
+        "Cache-Control": "public, max-age=60",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; style-src 'unsafe-inline'",
+      });
       return response.type("html").send(publishedWidgetHtml(widget));
     } catch (error) { return error instanceof PublicGrowthError ? response.status(error.status).send("Published testimonial widget not found.") : Promise.reject(error); }
   });
@@ -1144,7 +1217,12 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
     if (!parsed.success || !workspace) return response.status(404).send("Published testimonial widget not found.");
     try {
       const widget = await publicGrowth.widgetByWorkspaceId(workspace.id, parsed.data.widgetVersionId);
-      response.set("Cache-Control", "public, max-age=60");
+      response.set({
+        "Cache-Control": "public, max-age=60",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; script-src 'none'; style-src 'unsafe-inline'",
+      });
       return response.type("html").send(publishedWidgetHtml(widget));
     } catch (error) { return error instanceof PublicGrowthError ? response.status(error.status).send("Published testimonial widget not found.") : Promise.reject(error); }
   });

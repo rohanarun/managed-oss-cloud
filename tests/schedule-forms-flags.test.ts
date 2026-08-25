@@ -83,6 +83,21 @@ describe("clean-room scheduling, forms, and feature-flags modules", () => {
   it("allows exactly one overlapping booking and returns the same booking on an idempotent retry", async () => {
     const store = new MemorySuiteStore("starter");
     const { host, release } = await publishedSchedule(store);
+    const availability = commandAudit(await executeSuiteAction(store, owner, "schedule", "availability-preview", {
+      releaseId: release.id,
+      from: "2026-08-25T14:07:00.000Z",
+      to: "2026-08-25T16:00:00.000Z",
+      timeZone: "America/New_York",
+    }, fixedDependencies()));
+    expect(availability.slots).toEqual(expect.arrayContaining([expect.objectContaining({ startsAt: "2026-08-25T14:30:00.000Z", endsAt: "2026-08-25T15:00:00.000Z" })]));
+    expect(availability.slots).not.toEqual(expect.arrayContaining([expect.objectContaining({ startsAt: "2026-08-25T14:07:00.000Z" })]));
+    await expect(executeSuiteAction(store, owner, "schedule", "booking-create", {
+      releaseId: release.id,
+      hostId: host.id,
+      startsAt: "2026-08-25T14:07:00.000Z",
+      endsAt: "2026-08-25T14:37:00.000Z",
+      idempotencyKey: "booking-off-grid-attempt-0000",
+    }, fixedDependencies())).rejects.toThrow(/slot grid/);
     const baseInput = { releaseId: release.id, hostId: host.id, startsAt: "2026-08-25T14:00:00.000Z", endsAt: "2026-08-25T14:30:00.000Z" };
     const attempted = await Promise.allSettled([
       executeSuiteAction(store, owner, "schedule", "booking-create", { ...baseInput, idempotencyKey: "booking-attempt-primary-0001" }, fixedDependencies()),

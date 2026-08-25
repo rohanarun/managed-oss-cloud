@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
+import type { SuiteRecordPage, SuiteRecordPageInput } from "../shared/module-read-model.js";
 import type { HostnameOwnershipInstructions } from "../shared/types.js";
 import {
   suiteApiTokenScopes,
@@ -34,6 +35,17 @@ import { ensureDatabaseMigrations } from "./database-migrations.js";
 import { hostnameClaimFromRow, hostnameOwnershipInstructions, insertPostgresHostnameClaim, MemoryHostnameClaimRegistry, newHostnameClaim, platformOwnedHostnameSuffixes, updatePostgresHostnameClaimStatus } from "./hostname-claims.js";
 import { transitionProposalOnlyAiAuditRecord, validateProposalOnlyAiJob } from "./ai-result.js";
 import { canReadSuiteRecord } from "./suite-record-visibility.js";
+import {
+  compareSuiteRecordPageKeys,
+  decodeSuiteRecordPageCursor,
+  normalizeSuiteRecordPageInput,
+  suiteRecordIsAfterPageCursor,
+  suiteRecordMatchesPageInput,
+  suiteRecordPage,
+  suiteRecordPageFingerprint,
+  type NormalizedSuiteRecordPageInput,
+  type SuiteRecordPageKey,
+} from "./suite-record-page.js";
 
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 const planAllows = (plan: string, moduleId: string) => { const module = suiteModuleById.get(moduleId); return Boolean(module && (config.SUITE_ENTITLEMENT_MODE === "unrestricted" || suitePlanAllows(plan, module))); };
@@ -139,6 +151,7 @@ export interface SuiteStore {
   setWorkspacePlan(userId: string, plan: SuitePlanId): Promise<SuiteWorkspace | undefined>;
   enableModule(userId: string, moduleId: string): Promise<SuiteWorkspace | undefined>;
   listRecords(userId: string, input: { moduleId?: string; recordType?: string; limit: number }): Promise<SuiteRecord[]>;
+  listRecordPage(userId: string, input: SuiteRecordPageInput): Promise<SuiteRecordPage>;
   findSignerSessionByTokenHash(userId: string, tokenHash: string): Promise<SuiteRecord | undefined>;
   getRecord(userId: string, recordId: string): Promise<SuiteRecord | undefined>;
   findCommandReceipt(userId: string, input: { recordType: SuiteCommandReceiptRecordType; moduleId: string; actionId: string; idempotencyKey: string }): Promise<SuiteRecord | undefined>;
@@ -198,6 +211,40 @@ export interface SuiteCustomDomain {
 }
 
 function now() { return new Date().toISOString(); }
+
+function postgresSuiteRecordPageQuery(
+  workspaceId: string,
+  input: NormalizedSuiteRecordPageInput,
+  cursor: SuiteRecordPageKey | undefined,
+  limit: number,
+) {
+  const values: unknown[] = [workspaceId, input.moduleId];
+  const filters = ["r.workspace_id=$1", "r.module_id=$2"];
+  if (input.recordType) {
+    values.push(input.recordType);
+    filters.push(`r.record_type=$${values.length}`);
+  }
+  if (input.state) {
+    values.push(input.state);
+    filters.push(`r.state=$${values.length}`);
+  }
+  if (input.search) {
+    values.push(input.search);
+    const parameter = values.length;
+    filters.push(`(r.id::TEXT=$${parameter}::TEXT OR LEFT(LOWER(r.title),LENGTH($${parameter}::TEXT))=$${parameter}::TEXT)`);
+  }
+  if (cursor) {
+    values.push(cursor.updatedAt);
+    const updatedAtParameter = values.length;
+    values.push(cursor.id);
+    filters.push(`(r.updated_at<$${updatedAtParameter}::TIMESTAMPTZ OR (r.updated_at=$${updatedAtParameter}::TIMESTAMPTZ AND r.id<$${values.length}::UUID))`);
+  }
+  values.push(limit);
+  return {
+    text: `SELECT r.* FROM suite_records r WHERE ${filters.join(" AND ")} ORDER BY r.updated_at DESC,r.id DESC LIMIT $${values.length}`,
+    values,
+  };
+}
 
 export class MemorySuiteStore implements SuiteStore {
   readonly persistence = "preview-memory" as const;
@@ -430,6 +477,23 @@ export class MemorySuiteStore implements SuiteStore {
       .filter((record) => trustedTransaction || Boolean(role && canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record)))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .slice(0, input.limit);
+  }
+
+  async listRecordPage(userId: string, rawInput: SuiteRecordPageInput) {
+    const input = normalizeSuiteRecordPageInput(rawInput);
+    const workspace = await this.getOrCreateWorkspace(userId);
+    const role = this.memberships.get(userId)?.role;
+    const trustedTransaction = this.transactionContext.getStore() === workspace.id;
+    const fingerprint = suiteRecordPageFingerprint(userId, workspace.id, input);
+    const cursor = decodeSuiteRecordPageCursor(input.cursor, fingerprint);
+    const visible = [...this.records.values()]
+      .filter((record) => record.workspaceId === workspace.id)
+      .filter((record) => suiteRecordMatchesPageInput(record, input))
+      .filter((record) => suiteRecordIsAfterPageCursor(record, cursor))
+      .filter((record) => trustedTransaction || Boolean(role && canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record)))
+      .sort(compareSuiteRecordPageKeys)
+      .slice(0, input.limit + 1);
+    return suiteRecordPage(visible, input.limit, fingerprint);
   }
 
   async findSignerSessionByTokenHash(userId: string, tokenHash: string) {
@@ -1006,6 +1070,41 @@ export class PostgresSuiteStore implements SuiteStore {
         cursor = { updatedAt: last.updated_at, id: String(last.id) };
       }
       return visible;
+    });
+  }
+
+  async listRecordPage(userId: string, rawInput: SuiteRecordPageInput) {
+    const input = normalizeSuiteRecordPageInput(rawInput);
+    return this.withUserWorkspace(userId, async (client, workspace) => {
+      const role = workspace.currentRole;
+      if (!role) return { records: [] };
+      const fingerprint = suiteRecordPageFingerprint(userId, workspace.id, input);
+      const cursor = decodeSuiteRecordPageCursor(input.cursor, fingerprint);
+      const trustedTransaction = Boolean(this.transactionContext.getStore());
+
+      if (trustedTransaction || role === "owner" || role === "admin") {
+        const query = postgresSuiteRecordPageQuery(workspace.id, input, cursor, input.limit + 1);
+        const result = await client.query(query.text, query.values);
+        return suiteRecordPage(result.rows.map((row) => this.record(row)), input.limit, fingerprint);
+      }
+
+      const visible: SuiteRecord[] = [];
+      const scanLimit = Math.min(500, Math.max(100, input.limit + 1));
+      let scanCursor = cursor;
+      while (visible.length < input.limit + 1) {
+        const query = postgresSuiteRecordPageQuery(workspace.id, input, scanCursor, scanLimit);
+        const result = await client.query(query.text, query.values);
+        if (!result.rows.length) break;
+        for (const row of result.rows) {
+          const record = this.record(row);
+          if (canReadSuiteRecord({ userId, workspaceId: workspace.id, role }, record)) visible.push(record);
+          if (visible.length === input.limit + 1) break;
+        }
+        if (result.rows.length < scanLimit || visible.length === input.limit + 1) break;
+        const last = this.record(result.rows.at(-1)!);
+        scanCursor = { updatedAt: last.updatedAt, id: last.id };
+      }
+      return suiteRecordPage(visible, input.limit, fingerprint);
     });
   }
 
