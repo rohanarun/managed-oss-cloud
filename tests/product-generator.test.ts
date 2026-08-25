@@ -62,7 +62,7 @@ describe("standalone product repository generator", () => {
       ], { cwd: repositoryRoot });
       const productRoot = join(outputRoot, "signalmesh");
       const packageMetadata = JSON.parse(await readFile(join(productRoot, "package.json"), "utf8")) as { version: string };
-      expect(packageMetadata.version).toBe("0.2.0");
+      expect(packageMetadata.version).toBe("0.3.0");
       const { stdout } = await execute("npm", ["test"], { cwd: productRoot });
       expect(stdout).toMatch(/tests 12/);
     } finally {
