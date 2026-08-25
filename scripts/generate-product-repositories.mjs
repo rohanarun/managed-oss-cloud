@@ -22,7 +22,7 @@ const generatedVersion = "0.3.0";
 const products = [
   { slug: "pulseflow", command: "pulseflow", moduleId: "automate", name: "PulseFlow", tagline: "Governed automations with typed triggers, approvals, retries, and explainable AI repair.", accent: "#16d9b3", accentDark: "#087f6d" },
   { slug: "signaldeck", command: "signaldeck", moduleId: "publish", name: "SignalDeck", tagline: "Plan, approve, publish, and explain multi-channel campaigns from one evidence trail.", accent: "#6ea8ff", accentDark: "#285eb5", primaryActionId: "campaign-draft" },
-  { slug: "relaydesk", command: "relaydesk", moduleId: "inbox", name: "RelayDesk", tagline: "A shared customer inbox with governed AI triage, response proposals, and SLA evidence.", accent: "#ff8c61", accentDark: "#ad4927" },
+  { slug: "relaydesk", command: "relaydesk", moduleId: "inbox", name: "RelayDesk", tagline: "A shared customer inbox with governed AI triage, response proposals, and SLA evidence.", accent: "#ff8c61", accentDark: "#ad4927", primaryActionId: "sla-policy-set" },
   { slug: "orbitcrm", command: "orbitcrm", moduleId: "crm", name: "OrbitCRM", tagline: "Relationship context, pipeline evidence, and AI-assisted next actions in a single workspace.", accent: "#9d84ff", accentDark: "#5b43b7" },
   { slug: "northstar-work", command: "northstar-work", moduleId: "tasks", name: "Northstar Work", tagline: "Turn outcomes into accountable projects, dependencies, sprints, and cited delivery insights.", accent: "#3fc8f4", accentDark: "#16708b" },
   { slug: "idealoop", command: "idealoop", moduleId: "feedback", name: "IdeaLoop", tagline: "Connect customer feedback to deduplication evidence, decisions, roadmaps, and releases.", accent: "#f2bf43", accentDark: "#8c6810" },
@@ -49,7 +49,7 @@ const products = [
   { slug: "letterline", command: "letterline", moduleId: "email", name: "Letterline", tagline: "Purpose-bound audiences, consent evidence, reviewed campaigns, and provider-neutral dispatch plans.", accent: "#70cfef", accentDark: "#26728a" },
   { slug: "schemadeck", command: "schemadeck", moduleId: "tables", name: "SchemaDeck", tagline: "Governed schemas, typed rows, deterministic views, and cited proposals in one shared data fabric.", accent: "#62d6ba", accentDark: "#1c7863" },
   { slug: "recall-room", command: "recall-room", moduleId: "meetings", name: "Recall Room", tagline: "Privacy-aware meeting evidence, decisions, owners, commitments, and reviewed follow-up proposals.", accent: "#aa96ff", accentDark: "#5f4aaf" },
-  { slug: "proofline-insights", command: "proofline-insights", moduleId: "insights", name: "Proofline Insights", tagline: "Metrics, observations, dashboards, and immutable reporting clocks with cited explanations.", accent: "#62b8ff", accentDark: "#28649c" },
+  { slug: "proofline-insights", command: "proofline-insights", moduleId: "insights", name: "Proofline Insights", tagline: "Metrics, observations, dashboards, and immutable reporting clocks with cited explanations.", accent: "#62b8ff", accentDark: "#28649c", primaryActionId: "dashboard-create" },
   { slug: "learning-forge", command: "learning-forge", moduleId: "learning", name: "Learning Forge", tagline: "Evidence-bound lessons, attempts, rubrics, reviewed feedback, and durable credentials.", accent: "#f4bf57", accentDark: "#8f6714" },
   { slug: "circlefield", command: "circlefield", moduleId: "community", name: "Circlefield", tagline: "Portable community context, memberships, moderation receipts, and reviewed announcements.", accent: "#eb82b6", accentDark: "#963f6a" },
   { slug: "gatherledger", command: "gatherledger", moduleId: "events", name: "GatherLedger", tagline: "Auditable event releases, ticket inventory, money receipts, access records, and attendee proposals.", accent: "#ff916c", accentDark: "#a8492e" },
@@ -1204,6 +1204,12 @@ function shortDate(value) {
   return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date) : "Not dated";
 }
 
+function dateTimeLocalValue(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Date(date.getTime() - (date.getTimezoneOffset() * 60_000)).toISOString().slice(0, 16);
+}
+
 function make(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
@@ -1439,6 +1445,16 @@ function fieldDescription(schema) {
   return schema.description || (schema.format ? "Required format: " + schema.format + "." : "Typed input enforced by the product action contract.");
 }
 
+function runtimeExampleInput(action) {
+  const example = structuredClone(action.exampleInput ?? {});
+  const currentUserId = workspaceValue().userId;
+  if (!currentUserId) return example;
+  for (const name of ["employeeRef", "managerRef", "ownerRef"]) {
+    if (Object.hasOwn(action.inputSchema.properties ?? {}, name) && typeof example[name] === "string") example[name] = currentUserId;
+  }
+  return example;
+}
+
 function createField(name, schema, value, required) {
   const group = make("div", "field-group");
   const label = make("label", "field-label");
@@ -1474,7 +1490,7 @@ function createField(name, schema, value, required) {
     if (schema.minimum !== undefined) control.min = String(schema.minimum);
     if (schema.maximum !== undefined) control.max = String(schema.maximum);
     if (schema.maxLength !== undefined) control.maxLength = schema.maxLength;
-    if (value !== undefined && value !== null) control.value = schema.format === "date-time" ? String(value).replace(/Z$/, "").slice(0, 16) : String(value);
+    if (value !== undefined && value !== null) control.value = schema.format === "date-time" ? dateTimeLocalValue(value) : String(value);
     if (schema.format === "uuid" || /Id$/.test(name)) {
       control.setAttribute("list", "record-identifiers");
       control.placeholder = "Select or paste a record ID";
@@ -1491,7 +1507,7 @@ function createField(name, schema, value, required) {
 function buildActionForm(action) {
   const form = clear(byId("action-form"));
   const required = new Set(action.inputSchema.required ?? []);
-  const example = action.exampleInput ?? {};
+  const example = runtimeExampleInput(action);
   for (const [name, schema] of Object.entries(action.inputSchema.properties ?? {})) form.append(createField(name, schema, example[name], required.has(name)));
   byId("action-json").value = JSON.stringify(example, null, 2);
   form.addEventListener("input", () => {
@@ -1528,6 +1544,11 @@ function collectActionInput(action) {
 function openAction(actionId) {
   const action = state.manifest.actions.find((candidate) => candidate.id === actionId);
   if (!action) return;
+  if (!state.connected) {
+    byId("connect-dialog").showModal();
+    toast("Connect the product server before opening a workflow.", "error");
+    return;
+  }
   state.selectedAction = action;
   byId("action-dialog-title").textContent = action.title;
   byId("action-dialog-description").textContent = action.description;
@@ -2528,6 +2549,42 @@ assert.equal(height, 1000, "The product screenshot height must be exactly 1000 p
 process.stdout.write(manifest.product.name + ": verified " + width + "x" + height + " product screenshot.\n");
 `;
 
+const verifyTutorialSource = String.raw`import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { manifest } from "../src/manifest.mjs";
+
+const [video, subtitles, proofBytes] = await Promise.all([
+  readFile(new URL("../docs/tutorial.mp4", import.meta.url)),
+  readFile(new URL("../docs/tutorial.srt", import.meta.url)),
+  readFile(new URL("../docs/tutorial-proof.json", import.meta.url)),
+]);
+const proof = JSON.parse(proofBytes);
+const digest = (value) => createHash("sha256").update(value).digest("hex");
+assert.ok(video.length >= 200_000 && video.length <= 8 * 1024 * 1024, "The tutorial MP4 must be between 200 KB and 8 MiB.");
+assert.equal(video.subarray(4, 8).toString("ascii"), "ftyp", "The tutorial must be an MP4 file.");
+for (const marker of ["moov", "mdat", "avc1"]) assert.ok(video.includes(Buffer.from(marker)), "The tutorial MP4 is missing " + marker + ".");
+assert.equal(proof.schema, "managed-oss-functional-tutorial.v1");
+assert.equal(proof.product.slug, manifest.product.slug);
+assert.equal(proof.product.moduleId, manifest.module.id);
+assert.equal(proof.backend.release, manifest.release.backendRelease);
+assert.equal(proof.backend.commit, manifest.release.backendCommit);
+assert.equal(proof.functionalProof.action.id, manifest.experience.primaryActionId);
+assert.equal(proof.functionalProof.action.httpStatus, 200);
+assert.equal(proof.functionalProof.detail.httpStatus, 200);
+assert.equal(proof.functionalProof.detail.matched, true);
+assert.match(proof.functionalProof.record.id, /^[0-9a-f-]{36}$/);
+assert.equal(proof.explanation.generation.provider, "OpenRouter");
+assert.equal(proof.explanation.generation.model, "google/gemini-3.7-flash");
+assert.equal(proof.explanation.cues.length, 5);
+assert.equal(proof.video.overlaysBurnedIn, true);
+assert.equal(proof.video.final.sha256, digest(video));
+assert.equal(proof.video.subtitles.sha256, digest(subtitles));
+assert.equal((subtitles.toString("utf8").match(/ --> /g) ?? []).length, 5);
+assert.doesNotMatch(proofBytes.toString("utf8"), /sk-or-|authorization|127\.0\.0\.1|localhost|webKey|apiToken/i);
+process.stdout.write(manifest.product.name + ": verified real-backend tutorial MP4, subtitles, and functional proof.\n");
+`;
+
 const mitLicense = `MIT License
 
 Copyright (c) 2026 Rohan Arun and contributors
@@ -2561,6 +2618,12 @@ ${product.tagline}
 ${product.name} is a focused, public MIT distribution for the \`${module.id}\` module in [managed-oss-cloud](https://github.com/rohanarun/managed-oss-cloud). It includes a product web UI, a product-scoped HTTP client, the \`${product.command}\` CLI, and a stdio MCP server exposing only this product's ${manifest.actions.length} typed actions.
 
 ![${product.name} sample workspace](./docs/product-workspace.png)
+
+## Functional tutorial
+
+[Watch the real-backend product tutorial](./docs/tutorial.mp4) · [Download subtitles](./docs/tutorial.srt) · [Inspect functional proof](./docs/tutorial-proof.json)
+
+The tutorial is captured from this product's actual browser UI against an isolated shared backend. Publication requires a successful guided action, an HTTP 200 durable-record readback, the exact record reopened in the UI, Gemini-generated explanations through OpenRouter, burned-in step captions, and matching artifact hashes.
 
 ## Product v1 boundary
 
@@ -2691,6 +2754,7 @@ See [SECURITY.md](./SECURITY.md) for vulnerability reporting and the trust bound
 npm test
 npm run verify
 npm run verify:screenshot
+npm run verify:tutorial
 npm pack --dry-run
 \`\`\`
 
@@ -2743,6 +2807,7 @@ function packageJson(product) {
       test: "node --test --test-concurrency=1",
       verify: "node scripts/verify-manifest.mjs && node --test --test-concurrency=1",
       "verify:screenshot": "node scripts/verify-screenshot.mjs",
+      "verify:tutorial": "node scripts/verify-tutorial.mjs",
     },
   };
 }
@@ -2785,6 +2850,7 @@ jobs:
       - run: npm test
       - run: npm run verify
       - run: npm run verify:screenshot
+      - run: npm run verify:tutorial
       - run: npm pack --dry-run
       - run: docker build --tag product-ci:test .
 `;
@@ -2836,6 +2902,7 @@ async function writeProductRepository(root, product, force) {
     ["product-manifest.json", json(manifest)],
     ["scripts/verify-manifest.mjs", verifyManifestSource],
     ["scripts/verify-screenshot.mjs", verifyScreenshotSource],
+    ["scripts/verify-tutorial.mjs", verifyTutorialSource],
     ["src/cli.mjs", cliSource],
     ["src/client.mjs", clientSource],
     ["src/demo-client.mjs", demoClientSource],
@@ -2867,7 +2934,7 @@ async function writeProductRepository(root, product, force) {
 
 async function main() {
   const packageMetadata = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
-  if (packageMetadata.version !== "0.4.3") throw new Error("This generator requires managed-oss-cloud package metadata version 0.4.3.");
+  if (packageMetadata.version !== "0.4.4") throw new Error("This generator requires managed-oss-cloud package metadata version 0.4.4.");
   if (products.length !== 37 || new Set(products.map((product) => product.moduleId)).size !== 37 || new Set(products.map((product) => product.slug)).size !== 37) {
     throw new Error("The product registry must contain exactly 37 unique products and modules.");
   }

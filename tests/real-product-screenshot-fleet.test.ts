@@ -3,7 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { chromium } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { findChromiumExecutable, runProductTutorialWorkflow } from "../scripts/product-tutorial-browser.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = process.cwd();
@@ -30,7 +32,17 @@ interface FleetSummary {
     testimonialWidget: string;
     testimonialDiscovery: string;
   };
-  products: Array<{ slug: string; moduleId: string; recordId: string; url: string }>;
+  products: Array<{
+    slug: string;
+    name: string;
+    moduleId: string;
+    recordId: string;
+    url: string;
+    primaryActionId: string;
+    primaryActionTitle: string;
+    primaryRecordType?: string;
+    tutorialInput: Record<string, unknown>;
+  }>;
 }
 
 async function readyLine(child: ChildProcessWithoutNullStreams) {
@@ -83,6 +95,7 @@ describe("real-backend product screenshot fleet", () => {
     expect(new Set(summary.products.map((product) => product.slug)).size).toBe(37);
     expect(new Set(summary.products.map((product) => product.moduleId)).size).toBe(37);
     expect(summary.products.every((product) => /^[0-9a-f-]{36}$/.test(product.recordId))).toBe(true);
+    expect(summary.products.every((product) => product.primaryActionId && Object.keys(product.tutorialInput).length > 0)).toBe(true);
     const publicForm = await fetch(summary.publicSurfaces.form);
     expect(publicForm.status).toBe(200);
     expect(await publicForm.text()).toContain("Tell us what you are building");
@@ -215,4 +228,63 @@ describe("real-backend product screenshot fleet", () => {
       expect((await records.json()).records.some((record: { id: string }) => record.id === product.recordId)).toBe(true);
     }
   });
+
+  it("executes every product's tutorial workflow and reads its durable result back", async () => {
+    for (const product of summary.products) {
+      const actionResponse = await fetch(product.url + "product-api/actions/" + encodeURIComponent(product.primaryActionId), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Product-Web-Key": summary.webKey,
+        },
+        body: JSON.stringify({ input: product.tutorialInput }),
+      });
+      const result = await actionResponse.json() as {
+        kind?: string;
+        record?: { id: string; moduleId: string; recordType: string };
+        records?: Array<{ id: string; moduleId: string; recordType: string }>;
+        error?: string;
+      };
+      expect(actionResponse.status, product.slug + ": " + (result.error ?? "action failed")).toBe(200);
+      const records = [...(result.records ?? []), ...(result.record ? [result.record] : [])];
+      const durable = records.find((record) => record.moduleId === product.moduleId && (!product.primaryRecordType || record.recordType === product.primaryRecordType));
+      expect(durable, product.slug + " did not return its primary durable record").toBeDefined();
+
+      const detailResponse = await fetch(product.url + "product-api/records/" + encodeURIComponent(durable!.id), {
+        headers: { "X-Product-Web-Key": summary.webKey },
+      });
+      expect(detailResponse.status, product.slug + " detail read failed").toBe(200);
+      const detail = await detailResponse.json() as { record?: { id?: string; moduleId?: string } };
+      expect(detail.record).toMatchObject({ id: durable!.id, moduleId: product.moduleId });
+
+      const listResponse = await fetch(product.url + "product-api/records?limit=100", {
+        headers: { "X-Product-Web-Key": summary.webKey },
+      });
+      expect(listResponse.status, product.slug + " record list failed").toBe(200);
+      const listed = await listResponse.json() as { records?: Array<{ id: string }> };
+      expect(listed.records?.some((record) => record.id === durable!.id), product.slug + " durable record was absent from the list").toBe(true);
+    }
+  });
+
+  it("completes every product's primary workflow through the real browser UI", async () => {
+    const executablePath = await findChromiumExecutable();
+    const browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
+    try {
+      for (const product of summary.products) {
+        const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: "light" });
+        const page = await context.newPage();
+        try {
+          const proof = await runProductTutorialWorkflow(page, { product, webKey: summary.webKey });
+          expect(proof.action, product.slug).toMatchObject({ id: product.primaryActionId, httpStatus: 200 });
+          expect(proof.record.id, product.slug).toMatch(/^[0-9a-f-]{36}$/);
+          expect(proof.detail, product.slug).toEqual({ httpStatus: 200, matched: true });
+          expect(proof.steps.map((step) => step.id), product.slug).toEqual(["overview", "connect", "configure", "execute", "inspect"]);
+        } finally {
+          await context.close();
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  }, 180_000);
 });

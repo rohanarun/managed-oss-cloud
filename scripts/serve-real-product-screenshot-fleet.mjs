@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { MemoryRepository } from "../src/server/repository.ts";
 import { executeSuiteAction } from "../src/server/suite-engine.ts";
 import { MemorySuiteStore } from "../src/server/suite-store.ts";
 import { suiteModules } from "../src/shared/suite.ts";
+import { buildTutorialInput } from "./product-tutorial-workflow.mjs";
 
 const root = resolve(process.argv[2] ?? "");
 const basePort = Number(process.argv[3] ?? 4300);
@@ -64,6 +65,9 @@ const ownerId = String(signup.user.id);
 await suiteStore.setWorkspacePlan(ownerId, "fleet");
 for (const module of suiteModules) await suiteStore.enableModule(ownerId, module.id);
 const workspace = await suiteStore.getOrCreateWorkspace(ownerId);
+const tutorialMemberId = randomUUID();
+const tutorialMember = await suiteStore.addWorkspaceMember(ownerId, tutorialMemberId, "admin");
+if (!tutorialMember) throw new Error("The tutorial workspace member fixture was not created.");
 
 function durableRecords(result) {
   if (result?.kind === "record" && result.record) return [result.record];
@@ -428,9 +432,11 @@ for (const [index, slug] of directories.entries()) {
   const client = new ProductClient({ baseUrl: backendUrl, token: rawToken.token });
   const primary = manifest.actions.find((action) => action.id === manifest.experience.primaryActionId);
   if (!primary) throw new Error(slug + " has no primary action.");
-  const seeded = await client.runAction(primary.id, primaryInput(manifest, primary));
+  const seededInput = primaryInput(manifest, primary);
+  const seeded = await client.runAction(primary.id, seededInput);
   const durable = [...(seeded.records ?? []), ...(seeded.record ? [seeded.record] : [])].find((record) => record.moduleId === manifest.module.id);
   if (!durable) throw new Error(slug + " primary action did not create a durable backend record.");
+  const tutorialInput = buildTutorialInput({ manifest, action: primary, runtimeInput: seededInput, ownerId, tutorialMemberId });
 
   const server = createProductWebServer({ client, webKey });
   const requestedPort = basePort === 0 ? 0 : basePort + index;
@@ -440,7 +446,18 @@ for (const [index, slug] of directories.entries()) {
   });
   const port = listeningPort(server);
   servers.push(server);
-  products.push({ slug, name: manifest.product.name, moduleId: manifest.module.id, recordId: durable.id, port, url: "http://127.0.0.1:" + port + "/" });
+  products.push({
+    slug,
+    name: manifest.product.name,
+    moduleId: manifest.module.id,
+    recordId: durable.id,
+    port,
+    url: "http://127.0.0.1:" + port + "/",
+    primaryActionId: primary.id,
+    primaryActionTitle: primary.title,
+    primaryRecordType: primary.recordType,
+    tutorialInput,
+  });
 }
 
 process.stdout.write(JSON.stringify({ ok: true, mode: "real-backend", root, webKey, backendUrl, workspaceId: workspace.id, publicSurfaces, products }) + "\n");

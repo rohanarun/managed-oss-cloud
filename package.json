@@ -1,6 +1,6 @@
 {
   "name": "managed-oss-cloud",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "bin": {
@@ -22,7 +22,10 @@
     "verify:mcp": "node scripts/verify-mcp.mjs",
     "verify:live-products": "node scripts/verify-live-product-clients.mjs",
     "generate:products": "node --import tsx scripts/generate-product-repositories.mjs",
+    "products:release:verify": "node scripts/verify-product-release-fleet.mjs",
     "screenshots:serve-real": "node --import tsx scripts/serve-real-product-screenshot-fleet.mjs",
+    "tutorials:record": "node scripts/record-product-tutorials.mjs",
+    "tutorials:verify": "node scripts/verify-product-tutorials.mjs",
     "audit:licenses": "node scripts/license-audit.mjs",
     "migrate": "node dist-server/server/migrate-command.js",
     "attest:external-evidence": "node dist-server/server/external-evidence-attestation-command.js",
@@ -55,6 +58,7 @@
     "@types/supertest": "^7.2.1",
     "@vitejs/plugin-react": "^5.0.2",
     "concurrently": "^9.2.1",
+    "playwright-core": "^1.62.1",
     "supertest": "^7.2.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
