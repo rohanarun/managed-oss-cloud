@@ -14,10 +14,10 @@ import {
 const generatorDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(generatorDirectory, "..");
 const defaultOutputRoot = "/Volumes/SP AI 01_16/managed-oss-product-repos";
-const sourceRelease = "v0.4.3";
-const sourceCommit = "6947288c99d77f6391beb56211a6750c229a58d2";
+const sourceRelease = "v0.4.4";
+const sourceCommit = "148abce99b91d8b9fdc8aa41c3f0eba283796db4";
 const sourceSnapshotSha256 = "2a97e3dd83247132d34fd65b6a217e6eb151d9fb3ecff87bfb062e16aa2cff3f";
-const generatedVersion = "0.3.0";
+const generatedVersion = "0.3.1";
 
 const products = [
   { slug: "pulseflow", command: "pulseflow", moduleId: "automate", name: "PulseFlow", tagline: "Governed automations with typed triggers, approvals, retries, and explainable AI repair.", accent: "#16d9b3", accentDark: "#087f6d" },
