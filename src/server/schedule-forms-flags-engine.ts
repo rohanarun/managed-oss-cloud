@@ -168,6 +168,24 @@ function scheduleAllows(content: Record<string, unknown>, candidate: { startsAt:
   });
 }
 
+function normalizedBookingInvitee(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invitee must be an object.");
+  const source = value as Record<string, unknown>;
+  const unsupported = Object.keys(source).find((key) => !["name", "email", "timeZone", "notes", "consent"].includes(key));
+  if (unsupported) throw new Error(`invitee.${unsupported} is not supported.`);
+  const name = text(source, "name", 160);
+  const email = text(source, "email", 254).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("invitee.email must be a valid email address.");
+  const zone = timeZone(source.timeZone);
+  const notes = source.notes === undefined ? undefined : text(source, "notes", 2_000);
+  if (!source.consent || typeof source.consent !== "object" || Array.isArray(source.consent)) throw new Error("invitee.consent must be an object.");
+  const consent = source.consent as Record<string, unknown>;
+  if (Object.keys(consent).some((key) => !["granted", "policyVersion"].includes(key)) || consent.granted !== true) throw new Error("invitee.consent must contain explicit granted consent.");
+  const policyVersion = text(consent, "policyVersion", 100);
+  return { name, email, timeZone: zone, ...(notes ? { notes } : {}), consent: { granted: true, policyVersion } };
+}
+
 async function releaseScheduleContent(store: SuiteStore, userId: string, release: SuiteRecord) {
   const revision = await owned(store, userId, release.data.scheduleRevisionId, "schedule", "schedule-revision", "scheduleRevisionId");
   if (revision.state !== "published" || revision.data.contentHash !== (release.data.content as Record<string, unknown>).scheduleContentHash) throw new Error("The booking release's exact schedule revision is unavailable.");
@@ -271,16 +289,18 @@ async function executeSchedule(store: SuiteStore, userId: string, action: SuiteA
     if ((new Date(requested.endsAt).getTime() - new Date(requested.startsAt).getTime()) / 60_000 !== release.data.durationMinutes) throw new Error("The requested interval does not match the published event duration.");
     if (!scheduleAllows(await releaseScheduleContent(store, userId, release), requested)) throw new Error("The requested interval is outside the exact published host availability.");
     const key = idempotencyKey(input);
+    const invitee = normalizedBookingInvitee(input.invitee);
+    const inviteeDigest = invitee ? digest(invitee) : undefined;
     return locked(`schedule-book:${release.workspaceId}:${hostId}`, async () => {
       const bookings = await store.listRecords(userId, { moduleId: "schedule", recordType: "booking", limit: 10_000 });
       const replay = bookings.find((booking) => booking.data.idempotencyKey === key);
       if (replay) {
-        if (replay.data.releaseId !== release.id || replay.data.hostId !== hostId || replay.data.startsAt !== requested.startsAt || replay.data.endsAt !== requested.endsAt) throw new Error("The booking idempotency key was already used for a different reservation.");
+        if (replay.data.releaseId !== release.id || replay.data.hostId !== hostId || replay.data.startsAt !== requested.startsAt || replay.data.endsAt !== requested.endsAt || replay.data.inviteeDigest !== inviteeDigest) throw new Error("The booking idempotency key was already used for a different reservation.");
         return result(action, [replay], { bookingId: replay.id, version: replay.data.version, replayed: true });
       }
       const conflict = await scheduleConflict(store, userId, hostId, requested);
       if (conflict) throw new Error(`The requested host interval conflicts with active booking ${conflict.id}.`);
-      const booking = await create(store, userId, { moduleId: "schedule", recordType: "booking", title: `Booking · ${release.title}`, state: "confirmed", data: { releaseId: release.id, releaseContentHash: release.data.contentHash, scheduleRevisionId: release.data.scheduleRevisionId, hostId, ...requested, idempotencyKey: key, version: 1, providerStatus: "not-configured", createdAt: now } });
+      const booking = await create(store, userId, { moduleId: "schedule", recordType: "booking", title: `Booking · ${release.title}`, state: "confirmed", data: { releaseId: release.id, releaseContentHash: release.data.contentHash, scheduleRevisionId: release.data.scheduleRevisionId, hostId, ...requested, idempotencyKey: key, invitee, inviteeDigest, version: 1, providerStatus: "not-configured", createdAt: now } });
       const event = await create(store, userId, { moduleId: "schedule", recordType: "booking-event", title: `Created · ${booking.id}`, state: "recorded", data: { bookingId: booking.id, eventType: "created", version: 1, occurredAt: now, appendOnly: true } });
       return result(action, [booking, event], { bookingId: booking.id, eventId: event.id, version: 1, replayed: false, providerAccepted: false });
     });

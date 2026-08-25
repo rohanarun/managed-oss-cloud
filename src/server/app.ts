@@ -28,6 +28,17 @@ import { PublicSigningService, validatePublicVerificationKey, type PublicVerific
 import { resolvePublicHttpsDestination, type PublicDestinationResolver } from "./public-destination.js";
 import { PublicGrowthError, PublicGrowthService, type PublishedPageProjection, type PublishedWidgetProjection } from "./public-growth.js";
 import { HostedEsignService, createHostedEsignRouter, type HostedEsignObjectLoader, type HostedEsignRateLimiter } from "./hosted-esign.js";
+import {
+  PUBLIC_BOOKING_POLICY_VERSION,
+  publicAvailabilityQuerySchema,
+  publicBookingSchema,
+  publicEventRelease,
+  publicFormRelease,
+  publicFormSubmissionSchema,
+  renderPublicBookingPage,
+  renderPublicFormPage,
+  setPublicPortalHeaders,
+} from "./public-form-schedule.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(moduleDirectory, "../..");
@@ -105,6 +116,10 @@ const publicConsentChoiceSchema = z.object({
   gpc: z.boolean().optional(),
 }).refine((value) => value.action === "revoke" || Boolean(value.decisions?.length), { message: "A choice must include decisions.", path: ["decisions"] });
 const publicSeoReportTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
+const publicFormParamsSchema = z.object({ workspaceSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,80}$/), releaseId: z.string().uuid() });
+const customDomainFormParamsSchema = z.object({ releaseId: z.string().uuid() });
+const publicBookingParamsSchema = z.object({ workspaceSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{2,80}$/), eventSlug: z.string().regex(/^[a-z][a-z0-9-]{1,79}$/) });
+const customDomainBookingParamsSchema = z.object({ eventSlug: z.string().regex(/^[a-z][a-z0-9-]{1,79}$/) });
 
 function bearerToken(request: Request) { const authorization = request.get("authorization") ?? ""; return authorization.startsWith("Bearer ") ? authorization.slice(7) : undefined; }
 function tokenMatches(actual: string | undefined, expected: string | undefined) {
@@ -231,6 +246,114 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
   const publicWriteLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 30, standardHeaders: true, legacyHeaders: false });
   const publicRedirectLimiter = rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false });
   const checkedPublicDestination = (value: unknown) => resolvePublicHttpsDestination(value, options.publicDestinationResolver);
+  const formForWorkspace = async (workspace: SuiteWorkspace, releaseId: string) => {
+    const records = await suiteStore.listPublicWorkflowRecords(workspace.slug, { moduleId: "forms", recordType: "form-release", limit: 10_000 });
+    const record = records.find((candidate) => candidate.id === releaseId);
+    return record ? publicFormRelease(record) : undefined;
+  };
+  const eventForWorkspace = async (workspace: SuiteWorkspace, eventSlug: string) => {
+    const records = await suiteStore.listPublicWorkflowRecords(workspace.slug, { moduleId: "schedule", recordType: "event-release", limit: 10_000 });
+    for (const record of records) {
+      const release = publicEventRelease(record);
+      if (release?.slug === eventSlug) return release;
+    }
+    return undefined;
+  };
+  const runPublicSuiteAction = async (workspace: SuiteWorkspace, moduleId: "forms" | "schedule", actionId: string, input: Record<string, unknown>) => {
+    return suiteStore.runInWorkspaceTransaction(workspace.userId, async (lockedWorkspace) => {
+      if (lockedWorkspace.id !== workspace.id || !lockedWorkspace.enabledModuleIds.includes(moduleId)) throw new Error("The public workflow is not enabled.");
+      return executeSuiteAction(suiteStore, workspace.userId, moduleId, actionId, input);
+    });
+  };
+  const publicWorkflowFailure = (response: Response, error: unknown, workflow: "form" | "booking") => {
+    const message = error instanceof Error ? error.message : "";
+    if (/idempotency key/i.test(message)) return response.status(409).json({ error: "This request key was already used with different details." });
+    if (/conflict|no longer active|outside the exact published|unavailable/i.test(message)) return response.status(409).json({ error: workflow === "booking" ? "That time is no longer available. Choose another time." : "This form version is no longer accepting responses." });
+    if (/storage|quota|not accepting more/i.test(message)) return response.status(503).json({ error: "This workspace cannot accept more responses right now." });
+    return response.status(400).json({ error: workflow === "booking" ? "The booking details could not be accepted." : "The response did not match this published form." });
+  };
+  const serveFormPage = async (response: Response, workspace: SuiteWorkspace, releaseId: string, submitPath: string) => {
+    const release = await formForWorkspace(workspace, releaseId);
+    if (!release) return response.status(404).send("Form not found.");
+    const nonce = randomBytes(24).toString("base64url");
+    setPublicPortalHeaders(response, nonce);
+    return response.type("html").send(renderPublicFormPage({ workspaceName: workspace.name, release, submitPath, nonce }));
+  };
+  const submitForm = async (response: Response, workspace: SuiteWorkspace, releaseId: string, body: unknown) => {
+    response.set("Cache-Control", "no-store");
+    const release = await formForWorkspace(workspace, releaseId);
+    if (!release) return response.status(404).json({ error: "Form not found." });
+    const parsed = publicFormSubmissionSchema.safeParse(body);
+    if (!parsed.success) return response.status(400).json({ error: "Provide values and a valid request key for this form." });
+    try {
+      const result = await runPublicSuiteAction(workspace, "forms", "submission-create", { releaseId: release.id, ...parsed.data });
+      if (result.kind !== "command") throw new Error("The form submission did not produce a durable result.");
+      const submissionId = typeof result.audit.submissionId === "string" ? result.audit.submissionId : undefined;
+      if (!submissionId) throw new Error("The form submission did not produce a durable ID.");
+      const replayed = result.audit.replayed === true;
+      return response.status(replayed ? 200 : 201).json({ submissionId, state: "submitted", replayed });
+    } catch (error) {
+      return publicWorkflowFailure(response, error, "form");
+    }
+  };
+  const serveBookingPage = async (response: Response, workspace: SuiteWorkspace, eventSlug: string, availabilityPath: string, bookingPath: string) => {
+    const release = await eventForWorkspace(workspace, eventSlug);
+    if (!release) return response.status(404).send("Booking page not found.");
+    const nonce = randomBytes(24).toString("base64url");
+    setPublicPortalHeaders(response, nonce);
+    return response.type("html").send(renderPublicBookingPage({ workspaceName: workspace.name, release, availabilityPath, bookingPath, nonce }));
+  };
+  const showAvailability = async (response: Response, workspace: SuiteWorkspace, eventSlug: string, query: unknown) => {
+    response.set("Cache-Control", "no-store");
+    const release = await eventForWorkspace(workspace, eventSlug);
+    if (!release) return response.status(404).json({ error: "Booking page not found." });
+    const parsed = publicAvailabilityQuerySchema.safeParse(query);
+    if (!parsed.success) return response.status(400).json({ error: "Provide a valid availability range and time zone." });
+    try {
+      const result = await runPublicSuiteAction(workspace, "schedule", "availability-preview", { releaseId: release.id, ...parsed.data });
+      if (result.kind !== "command") throw new Error("Availability did not produce a safe projection.");
+      const slotSchema = z.object({ hostId: z.string().uuid(), startsAt: z.string().datetime({ offset: true }), endsAt: z.string().datetime({ offset: true }) }).strict();
+      const slots = Array.isArray(result.audit.slots) ? result.audit.slots.flatMap((slot) => {
+        const value = slotSchema.safeParse(slot);
+        return value.success ? [value.data] : [];
+      }) : [];
+      return response.json({
+        event: { slug: release.slug, title: release.title, durationMinutes: release.durationMinutes },
+        slots,
+        expiresAt: result.audit.expiresAt,
+        snapshotHash: result.audit.snapshotHash,
+        reservationHeld: false,
+      });
+    } catch (error) {
+      return publicWorkflowFailure(response, error, "booking");
+    }
+  };
+  const createBooking = async (response: Response, workspace: SuiteWorkspace, eventSlug: string, body: unknown) => {
+    response.set("Cache-Control", "no-store");
+    const release = await eventForWorkspace(workspace, eventSlug);
+    if (!release) return response.status(404).json({ error: "Booking page not found." });
+    const parsed = publicBookingSchema.safeParse(body);
+    if (!parsed.success || parsed.data.invitee.consent.policyVersion !== PUBLIC_BOOKING_POLICY_VERSION) return response.status(400).json({ error: "Provide a valid time, contact details, consent, and request key." });
+    try {
+      const result = await runPublicSuiteAction(workspace, "schedule", "booking-create", { releaseId: release.id, ...parsed.data });
+      if (result.kind !== "command") throw new Error("The booking did not produce a durable result.");
+      const bookingId = typeof result.audit.bookingId === "string" ? result.audit.bookingId : undefined;
+      const booking = bookingId ? result.records.find((record) => record.id === bookingId && record.recordType === "booking") : undefined;
+      if (!booking) throw new Error("The booking did not produce a durable record.");
+      const replayed = result.audit.replayed === true;
+      return response.status(replayed ? 200 : 201).json({
+        bookingId: booking.id,
+        state: booking.state,
+        startsAt: booking.data.startsAt,
+        endsAt: booking.data.endsAt,
+        event: { slug: release.slug, title: release.title, durationMinutes: release.durationMinutes },
+        providerStatus: booking.data.providerStatus === "not-configured" ? "not-configured" : "unknown",
+        replayed,
+      });
+    } catch (error) {
+      return publicWorkflowFailure(response, error, "booking");
+    }
+  };
 
   app.set("trust proxy", 1);
   app.use(helmet({ contentSecurityPolicy: false }));
@@ -748,6 +871,80 @@ export async function createApp(options: { repository?: Repository; suiteStore?:
     if (!report) return response.status(404).json({ error: "SEO report not found." });
     response.set("Cache-Control", "no-store");
     return response.json({ report: { id: report.id, title: report.title, publishedAt: report.data.publishedAt, snapshotHash: report.data.snapshotHash, snapshot: report.data.snapshot } });
+  });
+
+  app.get("/forms/:workspaceSlug/:releaseId", async (request, response) => {
+    const parsed = publicFormParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).send("Form not found.");
+    const workspace = await suiteStore.getWorkspaceBySlug(parsed.data.workspaceSlug);
+    return workspace ? serveFormPage(response, workspace, parsed.data.releaseId, `/api/public/${encodeURIComponent(workspace.slug)}/forms/${encodeURIComponent(parsed.data.releaseId)}/submissions`) : response.status(404).send("Form not found.");
+  });
+  app.post("/api/public/:workspaceSlug/forms/:releaseId/submissions", publicWriteLimiter, async (request, response) => {
+    const parsed = publicFormParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Form not found." });
+    const workspace = await suiteStore.getWorkspaceBySlug(parsed.data.workspaceSlug);
+    return workspace ? submitForm(response, workspace, parsed.data.releaseId, request.body) : response.status(404).json({ error: "Form not found." });
+  });
+  app.get("/forms/:releaseId", async (request, response) => {
+    const parsed = customDomainFormParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).send("Form not found.");
+    const workspace = await suiteStore.getWorkspaceByCustomDomain(request.hostname.toLowerCase());
+    return workspace ? serveFormPage(response, workspace, parsed.data.releaseId, `/api/public/forms/${encodeURIComponent(parsed.data.releaseId)}/submissions`) : response.status(404).send("Form not found.");
+  });
+  app.post("/api/public/forms/:releaseId/submissions", publicWriteLimiter, async (request, response) => {
+    const parsed = customDomainFormParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Form not found." });
+    const workspace = await suiteStore.getWorkspaceByCustomDomain(request.hostname.toLowerCase());
+    return workspace ? submitForm(response, workspace, parsed.data.releaseId, request.body) : response.status(404).json({ error: "Form not found." });
+  });
+
+  app.get("/book/:workspaceSlug/:eventSlug", async (request, response) => {
+    const parsed = publicBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).send("Booking page not found.");
+    const workspace = await suiteStore.getWorkspaceBySlug(parsed.data.workspaceSlug);
+    return workspace ? serveBookingPage(
+      response,
+      workspace,
+      parsed.data.eventSlug,
+      `/api/public/${encodeURIComponent(workspace.slug)}/schedule/${encodeURIComponent(parsed.data.eventSlug)}/availability`,
+      `/api/public/${encodeURIComponent(workspace.slug)}/schedule/${encodeURIComponent(parsed.data.eventSlug)}/bookings`,
+    ) : response.status(404).send("Booking page not found.");
+  });
+  app.get("/api/public/:workspaceSlug/schedule/:eventSlug/availability", publicRedirectLimiter, async (request, response) => {
+    const parsed = publicBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Booking page not found." });
+    const workspace = await suiteStore.getWorkspaceBySlug(parsed.data.workspaceSlug);
+    return workspace ? showAvailability(response, workspace, parsed.data.eventSlug, request.query) : response.status(404).json({ error: "Booking page not found." });
+  });
+  app.post("/api/public/:workspaceSlug/schedule/:eventSlug/bookings", publicWriteLimiter, async (request, response) => {
+    const parsed = publicBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Booking page not found." });
+    const workspace = await suiteStore.getWorkspaceBySlug(parsed.data.workspaceSlug);
+    return workspace ? createBooking(response, workspace, parsed.data.eventSlug, request.body) : response.status(404).json({ error: "Booking page not found." });
+  });
+  app.get("/book/:eventSlug", async (request, response) => {
+    const parsed = customDomainBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).send("Booking page not found.");
+    const workspace = await suiteStore.getWorkspaceByCustomDomain(request.hostname.toLowerCase());
+    return workspace ? serveBookingPage(
+      response,
+      workspace,
+      parsed.data.eventSlug,
+      `/api/public/schedule/${encodeURIComponent(parsed.data.eventSlug)}/availability`,
+      `/api/public/schedule/${encodeURIComponent(parsed.data.eventSlug)}/bookings`,
+    ) : response.status(404).send("Booking page not found.");
+  });
+  app.get("/api/public/schedule/:eventSlug/availability", publicRedirectLimiter, async (request, response) => {
+    const parsed = customDomainBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Booking page not found." });
+    const workspace = await suiteStore.getWorkspaceByCustomDomain(request.hostname.toLowerCase());
+    return workspace ? showAvailability(response, workspace, parsed.data.eventSlug, request.query) : response.status(404).json({ error: "Booking page not found." });
+  });
+  app.post("/api/public/schedule/:eventSlug/bookings", publicWriteLimiter, async (request, response) => {
+    const parsed = customDomainBookingParamsSchema.safeParse(request.params);
+    if (!parsed.success) return response.status(404).json({ error: "Booking page not found." });
+    const workspace = await suiteStore.getWorkspaceByCustomDomain(request.hostname.toLowerCase());
+    return workspace ? createBooking(response, workspace, parsed.data.eventSlug, request.body) : response.status(404).json({ error: "Booking page not found." });
   });
 
   app.get("/api/public/:workspaceSlug/:moduleId", async (request, response) => {

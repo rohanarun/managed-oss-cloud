@@ -260,6 +260,29 @@ const scheduleWindow = object(
   { dayOfWeek: 1, start: "09:00", end: "17:00" },
 );
 
+const bookingInviteeConsent = object(
+  "Explicit privacy-policy consent captured with a public booking.",
+  {
+    granted: { const: true, description: "The invitee explicitly accepted the disclosed booking-data purpose.", examples: [true] },
+    policyVersion: string("Immutable version of the privacy notice shown to the invitee.", "booking-privacy-v1", { maxLength: 100 }),
+  },
+  ["granted", "policyVersion"],
+  { granted: true, policyVersion: "booking-privacy-v1" },
+);
+
+const bookingInvitee = object(
+  "Private invitee details captured by a booking surface. These values are never part of public projections.",
+  {
+    name: string("Invitee display name.", "Asha Patel", { maxLength: 160 }),
+    email: string("Invitee email address.", "asha@example.com", { format: "email", maxLength: 254 }),
+    timeZone,
+    notes: string("Optional bounded notes supplied by the invitee.", "I would like to discuss onboarding.", { maxLength: 2_000 }),
+    consent: bookingInviteeConsent,
+  },
+  ["name", "email", "timeZone", "consent"],
+  { name: "Asha Patel", email: "asha@example.com", timeZone: "America/New_York", consent: { granted: true, policyVersion: "booking-privacy-v1" } },
+);
+
 const formField = object(
   "Bounded form field definition.",
   {
@@ -652,6 +675,7 @@ export const legacySuiteActionInputSchemas: Record<LegacySuiteModuleId, Record<s
       startsAt: dateTime("Requested booking start."),
       endsAt: dateTime("Requested booking end."),
       idempotencyKey,
+      invitee: bookingInvitee,
     }),
     "booking-get": schema(["bookingId"], { bookingId: uuid("Booking UUID.") }),
     "booking-reschedule-preview": schema(["bookingId", "startsAt", "endsAt"], {
